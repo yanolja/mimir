@@ -306,9 +306,6 @@ check-protos: clean-protos protos
 doc: ## Generates the config file documentation.
 doc: clean-doc
 	go run ./tools/doc-generator ./docs/sources/configuration/reference-configuration-parameters.template > ./docs/sources/configuration/reference-configuration-parameters.md
-	go run ./tools/doc-generator ./docs/sources/architecture/compactor.template              > ./docs/sources/architecture/compactor.md
-	go run ./tools/doc-generator ./docs/sources/architecture/store-gateway.template          > ./docs/sources/architecture/store-gateway.md
-	go run ./tools/doc-generator ./docs/sources/architecture/querier.template                > ./docs/sources/architecture/querier.md
 	go run ./tools/doc-generator ./docs/sources/operating-grafana-mimir/encrypt-data-at-rest.template     > ./docs/sources/operating-grafana-mimir/encrypt-data-at-rest.md
 	embedmd -w docs/sources/configuration/using-the-query-frontend-with-prometheus.md
 	embedmd -w docs/sources/operating-grafana-mimir/mirror-requests-to-a-second-cluster.md
@@ -380,9 +377,6 @@ load-images:
 clean-doc:
 	rm -f \
 		./docs/sources/configuration/config-file-reference.md \
-		./docs/sources/blocks-storage/compactor.md \
-		./docs/sources/blocks-storage/store-gateway.md \
-		./docs/sources/blocks-storage/querier.md \
 		./docs/sources/guides/encryption-at-rest.md
 
 check-doc: doc
