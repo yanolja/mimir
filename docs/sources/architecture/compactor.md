@@ -141,9 +141,9 @@ Alternatively, assuming the largest `-compactor.block-ranges` is `24h` (default)
 
 This section described the compactor configuration. For the general Cortex configuration and references to common config blocks, please refer to the [configuration documentation](../configuration/config-file-reference.md).
 
-### compactor_config
+### compactor
 
-The compactor_config configures the compactor service.
+The `compactor` block configures the compactor component.
 
 ```yaml
 compactor:
@@ -255,13 +255,13 @@ compactor:
       # CLI flag: -compactor.ring.prefix
       [prefix: <string> | default = "collectors/"]
 
-      # The consul_config configures the consul client.
-      # The CLI flags prefix for this block config is: compactor.ring
-      [consul: <consul_config>]
+      # The consul block configures the consul client.
+      # The CLI flags prefix for this block configuration is: compactor.ring
+      [consul: <consul>]
 
-      # The etcd_config configures the etcd client.
-      # The CLI flags prefix for this block config is: compactor.ring
-      [etcd: <etcd_config>]
+      # The etcd block configures the etcd client.
+      # The CLI flags prefix for this block configuration is: compactor.ring
+      [etcd: <etcd>]
 
       multi:
         # (advanced) Primary backend storage used by multi-client.

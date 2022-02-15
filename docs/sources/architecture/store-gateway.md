@@ -177,9 +177,9 @@ _The same memcached backend cluster should be shared between store-gateways and 
 
 This section described the store-gateway configuration. For the general Cortex configuration and references to common config blocks, please refer to the [configuration documentation](../configuration/config-file-reference.md).
 
-### store_gateway_config
+### store_gateway
 
-The store_gateway_config configures the store-gateway service.
+The `store_gateway` block configures the store-gateway component.
 
 ```yaml
 store_gateway:
@@ -198,15 +198,15 @@ store_gateway:
       # CLI flag: -store-gateway.sharding-ring.prefix
       [prefix: <string> | default = "collectors/"]
 
-      # The consul_config configures the consul client.
-      # The CLI flags prefix for this block config is:
+      # The consul block configures the consul client.
+      # The CLI flags prefix for this block configuration is:
       # store-gateway.sharding-ring
-      [consul: <consul_config>]
+      [consul: <consul>]
 
-      # The etcd_config configures the etcd client.
-      # The CLI flags prefix for this block config is:
+      # The etcd block configures the etcd client.
+      # The CLI flags prefix for this block configuration is:
       # store-gateway.sharding-ring
-      [etcd: <etcd_config>]
+      [etcd: <etcd>]
 
       multi:
         # (advanced) Primary backend storage used by multi-client.
@@ -292,9 +292,9 @@ store_gateway:
     [unregister_on_shutdown: <boolean> | default = true]
 ```
 
-### blocks_storage_config
+### blocks_storage
 
-The blocks_storage_config configures the blocks storage.
+The `blocks_storage` block configures the blocks storage.
 
 ```yaml
 blocks_storage:
@@ -338,9 +338,9 @@ blocks_storage:
     # CLI flag: -blocks-storage.s3.signature-version
     [signature_version: <string> | default = "v4"]
 
-    # The s3_sse_config configures the S3 server-side encryption.
-    # The CLI flags prefix for this block config is: blocks-storage
-    [sse: <s3_sse_config>]
+    # The sse block configures the S3 server-side encryption.
+    # The CLI flags prefix for this block configuration is: blocks-storage
+    [sse: <sse>]
 
     http:
       # (advanced) The time an idle connection will remain idle before closing.
@@ -552,10 +552,10 @@ blocks_storage:
       # CLI flag: -blocks-storage.bucket-store.index-cache.backend
       [backend: <string> | default = "inmemory"]
 
-      # The memcached_config configures the Memcached-based caching backend.
-      # The CLI flags prefix for this block config is:
+      # The memcached block configures the Memcached-based caching backend.
+      # The CLI flags prefix for this block configuration is:
       # blocks-storage.bucket-store.index-cache
-      [memcached: <memcached_config>]
+      [memcached: <memcached>]
 
       inmemory:
         # Maximum size in bytes of in-memory index cache used to speed up blocks
@@ -568,10 +568,10 @@ blocks_storage:
       # CLI flag: -blocks-storage.bucket-store.chunks-cache.backend
       [backend: <string> | default = ""]
 
-      # The memcached_config configures the Memcached-based caching backend.
-      # The CLI flags prefix for this block config is:
+      # The memcached block configures the Memcached-based caching backend.
+      # The CLI flags prefix for this block configuration is:
       # blocks-storage.bucket-store.chunks-cache
-      [memcached: <memcached_config>]
+      [memcached: <memcached>]
 
       # (advanced) Size of each subrange that bucket object is split into for
       # better caching.
@@ -605,10 +605,10 @@ blocks_storage:
       # CLI flag: -blocks-storage.bucket-store.metadata-cache.backend
       [backend: <string> | default = ""]
 
-      # The memcached_config configures the Memcached-based caching backend.
-      # The CLI flags prefix for this block config is:
+      # The memcached block configures the Memcached-based caching backend.
+      # The CLI flags prefix for this block configuration is:
       # blocks-storage.bucket-store.metadata-cache
-      [memcached: <memcached_config>]
+      [memcached: <memcached>]
 
       # (advanced) How long to cache list of tenants in the bucket.
       # CLI flag: -blocks-storage.bucket-store.metadata-cache.tenants-list-ttl

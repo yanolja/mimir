@@ -89,9 +89,9 @@ _The same memcached backend cluster should be shared between store-gateways and 
 
 This section described the querier configuration. For the general Cortex configuration and references to common config blocks, please refer to the [configuration documentation](../configuration/config-file-reference.md).
 
-### querier_config
+### querier
 
-The querier_config configures the querier.
+The `querier` block configures the querier.
 
 ```yaml
 querier:
@@ -189,9 +189,9 @@ querier:
   [lookback_delta: <duration> | default = 5m]
 ```
 
-### blocks_storage_config
+### blocks_storage
 
-The blocks_storage_config configures the blocks storage.
+The `blocks_storage` block configures the blocks storage.
 
 ```yaml
 blocks_storage:
@@ -235,9 +235,9 @@ blocks_storage:
     # CLI flag: -blocks-storage.s3.signature-version
     [signature_version: <string> | default = "v4"]
 
-    # The s3_sse_config configures the S3 server-side encryption.
-    # The CLI flags prefix for this block config is: blocks-storage
-    [sse: <s3_sse_config>]
+    # The sse block configures the S3 server-side encryption.
+    # The CLI flags prefix for this block configuration is: blocks-storage
+    [sse: <sse>]
 
     http:
       # (advanced) The time an idle connection will remain idle before closing.
@@ -449,10 +449,10 @@ blocks_storage:
       # CLI flag: -blocks-storage.bucket-store.index-cache.backend
       [backend: <string> | default = "inmemory"]
 
-      # The memcached_config configures the Memcached-based caching backend.
-      # The CLI flags prefix for this block config is:
+      # The memcached block configures the Memcached-based caching backend.
+      # The CLI flags prefix for this block configuration is:
       # blocks-storage.bucket-store.index-cache
-      [memcached: <memcached_config>]
+      [memcached: <memcached>]
 
       inmemory:
         # Maximum size in bytes of in-memory index cache used to speed up blocks
@@ -465,10 +465,10 @@ blocks_storage:
       # CLI flag: -blocks-storage.bucket-store.chunks-cache.backend
       [backend: <string> | default = ""]
 
-      # The memcached_config configures the Memcached-based caching backend.
-      # The CLI flags prefix for this block config is:
+      # The memcached block configures the Memcached-based caching backend.
+      # The CLI flags prefix for this block configuration is:
       # blocks-storage.bucket-store.chunks-cache
-      [memcached: <memcached_config>]
+      [memcached: <memcached>]
 
       # (advanced) Size of each subrange that bucket object is split into for
       # better caching.
@@ -502,10 +502,10 @@ blocks_storage:
       # CLI flag: -blocks-storage.bucket-store.metadata-cache.backend
       [backend: <string> | default = ""]
 
-      # The memcached_config configures the Memcached-based caching backend.
-      # The CLI flags prefix for this block config is:
+      # The memcached block configures the Memcached-based caching backend.
+      # The CLI flags prefix for this block configuration is:
       # blocks-storage.bucket-store.metadata-cache
-      [memcached: <memcached_config>]
+      [memcached: <memcached>]
 
       # (advanced) How long to cache list of tenants in the bucket.
       # CLI flag: -blocks-storage.bucket-store.metadata-cache.tenants-list-ttl
