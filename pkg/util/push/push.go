@@ -78,18 +78,22 @@ func handler(maxRecvMsgSize int,
 		if len(buf) > len(bufHolder.buf) {
 			bufHolder.buf = buf
 		}
+
 		cleanup := func() {
 			mimirpb.ReuseSlice(req.Timeseries)
 			bufferPool.Put(bufHolder)
 		}
+
 		if allowSkipLabelNameValidation {
 			req.SkipLabelNameValidation = req.SkipLabelNameValidation && r.Header.Get(SkipLabelNameValidationHeader) == "true"
 		} else {
 			req.SkipLabelNameValidation = false
 		}
+
 		if req.Source == 0 {
 			req.Source = mimirpb.API
 		}
+
 		if _, err := push(ctx, &req.WriteRequest, cleanup); err != nil {
 			resp, ok := httpgrpc.HTTPResponseFromError(err)
 			if !ok {
