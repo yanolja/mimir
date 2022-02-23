@@ -116,6 +116,8 @@ type Config struct {
 	EnableQueryStats bool `yaml:"query_stats_enabled" category:"advanced"`
 
 	TenantFederation TenantFederationConfig `yaml:"tenant_federation"`
+
+	RemoteQuerier RemoteQuerierConfig `yaml:"tenant_federation"`
 }
 
 // Validate config and returns error on failure
@@ -136,6 +138,7 @@ func (cfg *Config) RegisterFlags(f *flag.FlagSet, logger log.Logger) {
 	cfg.Ring.RegisterFlags(f, logger)
 	cfg.Notifier.RegisterFlags(f)
 	cfg.TenantFederation.RegisterFlags(f)
+	cfg.RemoteQuerier.RegisterFlags(f)
 
 	cfg.ExternalURL.URL, _ = url.Parse("") // Must be non-nil
 	f.Var(&cfg.ExternalURL, "ruler.external.url", "URL of alerts return path.")

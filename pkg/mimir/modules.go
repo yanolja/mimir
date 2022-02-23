@@ -23,7 +23,10 @@ import (
 	"github.com/opentracing-contrib/go-stdlib/nethttp"
 	"github.com/opentracing/opentracing-go"
 	"github.com/pkg/errors"
+	promapi "github.com/prometheus/client_golang/api"
+	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/rules"
 	prom_storage "github.com/prometheus/prometheus/storage"
 	"github.com/thanos-io/thanos/pkg/discovery/dns"
@@ -543,22 +546,43 @@ func (t *Mimir) initRuler() (serv services.Service, err error) {
 	t.Cfg.Ruler.Ring.KVStore.Multi.ConfigProvider = multiClientRuntimeConfigChannel(t.RuntimeConfig)
 	t.Cfg.Ruler.Ring.ListenPort = t.Cfg.Server.GRPCListenPort
 	rulerRegisterer := prometheus.WrapRegistererWith(prometheus.Labels{"engine": "ruler"}, prometheus.DefaultRegisterer)
+
 	var queryable, federatedQueryable prom_storage.Queryable
-	// TODO: Consider wrapping logger to differentiate from querier module logger
-	queryable, _, eng := querier.New(t.Cfg.Querier, t.Overrides, t.Distributor, t.StoreQueryables, rulerRegisterer, util_log.Logger, t.ActivityTracker)
+	var eng *promql.Engine
+	var queryableClient promv1.API
 
-	if t.Cfg.Ruler.TenantFederation.Enabled {
-		if !t.Cfg.TenantFederation.Enabled {
-			return nil, errors.New("-ruler.tenant-federation.enabled=true requires -tenant-federation.enabled=true")
+	if !t.Cfg.Ruler.RemoteQuerier.Enabled {
+		// TODO: Consider wrapping logger to differentiate from querier module logger
+		queryable, _, eng = querier.New(t.Cfg.Querier, t.Overrides, t.Distributor, t.StoreQueryables, rulerRegisterer, util_log.Logger, t.ActivityTracker)
+
+		if t.Cfg.Ruler.TenantFederation.Enabled {
+			if !t.Cfg.TenantFederation.Enabled {
+				return nil, errors.New("-ruler.tenant-federation.enabled=true requires -tenant-federation.enabled=true")
+			}
+			// Setting bypassForSingleQuerier=false forces `tenantfederation.NewQueryable` to add
+			// the `__tenant_id__` label on all metrics regardless if they're for a single tenant or multiple tenants.
+			// This makes this label more consistent and hopefully less confusing to users.
+			const bypassForSingleQuerier = false
+
+			federatedQueryable = tenantfederation.NewQueryable(queryable, bypassForSingleQuerier, util_log.Logger)
 		}
-		// Setting bypassForSingleQuerier=false forces `tenantfederation.NewQueryable` to add
-		// the `__tenant_id__` label on all metrics regardless if they're for a single tenant or multiple tenants.
-		// This makes this label more consistent and hopefully less confusing to users.
-		const bypassForSingleQuerier = false
 
-		federatedQueryable = tenantfederation.NewQueryable(queryable, bypassForSingleQuerier, util_log.Logger)
+	} else {
+		level.Warn(util_log.Logger).Log("msg", "starting ruler with remote querier support", "address", t.Cfg.Ruler.RemoteQuerier.Address)
+
+		promClient, err := promapi.NewClient(promapi.Config{
+			Address:      t.Cfg.Ruler.RemoteQuerier.Address,
+			RoundTripper: &ruler.OrgIDRoundTripper{Next: promapi.DefaultRoundTripper},
+		})
+		if err != nil {
+			return nil, err
+		}
+		queryable = prom_storage.QueryableFunc(func(ctx context.Context, mint, maxt int64) (prom_storage.Querier, error) {
+			return prom_storage.NoopQuerier(), nil
+		})
+		queryableClient = promv1.NewAPI(promClient)
 	}
-	managerFactory := ruler.DefaultTenantManagerFactory(t.Cfg.Ruler, t.Distributor, queryable, federatedQueryable, eng, t.Overrides, prometheus.DefaultRegisterer)
+	managerFactory := ruler.DefaultTenantManagerFactory(t.Cfg.Ruler, t.Distributor, queryable, federatedQueryable, eng, queryableClient, t.Overrides, prometheus.DefaultRegisterer)
 
 	// We need to prefix and add a label to the metrics for the DNS resolver because, unlike other mimir components,
 	// it doesn't already have the `cortex_` prefix and the `component` label to the metrics it emits

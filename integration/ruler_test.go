@@ -729,18 +729,32 @@ func TestRulerFederatedRules(t *testing.T) {
 		BlocksStorageFlags(),
 		RulerFlags(),
 		map[string]string{
-			"-ruler.tenant-federation.enabled":  "true",
 			"-tenant-federation.enabled":        "true",
+			"-ruler.tenant-federation.enabled":  "true",
 			"-ingester.ring.replication-factor": "1",
 		},
 	)
 
+	// Start the query-frontend.
+	queryFrontend := e2emimir.NewQueryFrontend("query-frontend", flags)
+	require.NoError(t, s.Start(queryFrontend))
+	flags["-querier.frontend-address"] = queryFrontend.NetworkGRPCEndpoint()
+
+	// Use query-frontend service to evaluate rules
+	flags["-ruler.remote-querier.enabled"] = "true"
+	flags["-ruler.remote-querier.address"] = fmt.Sprintf("http://" + queryFrontend.NetworkHTTPEndpoint() + "/prometheus")
+
 	// Start up services
 	distributor := e2emimir.NewDistributor("distributor", consul.NetworkHTTPEndpoint(), flags)
-	ruler := e2emimir.NewRuler("ruler", consul.NetworkHTTPEndpoint(), flags)
-	ingester := e2emimir.NewIngester("ingester", consul.NetworkHTTPEndpoint(), flags)
 	querier := e2emimir.NewQuerier("querier", consul.NetworkHTTPEndpoint(), flags)
-	require.NoError(t, s.StartAndWaitReady(distributor, ingester, ruler, querier))
+	ingester := e2emimir.NewIngester("ingester", consul.NetworkHTTPEndpoint(), flags)
+	ruler := e2emimir.NewRuler("ruler", consul.NetworkHTTPEndpoint(), flags)
+
+	require.NoError(t, s.StartAndWaitReady(distributor, querier, ingester, ruler))
+	require.NoError(t, s.WaitReady(queryFrontend))
+
+	// Wait until both the querier have updated the ring.
+	require.NoError(t, querier.WaitSumMetrics(e2e.Equals(512), "cortex_ring_tokens_total"))
 
 	// Wait until both the distributor and ruler are ready
 	// The distributor should have 512 tokens for the ingester ring and 1 for the distributor rin
