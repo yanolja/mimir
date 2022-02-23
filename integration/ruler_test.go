@@ -23,6 +23,8 @@ import (
 
 	"github.com/grafana/e2e"
 	e2edb "github.com/grafana/e2e/db"
+	"github.com/grafana/mimir/integration/ca"
+	"github.com/grafana/mimir/integration/e2emimir"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/model/rulefmt"
@@ -31,9 +33,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
-
-	"github.com/grafana/mimir/integration/ca"
-	"github.com/grafana/mimir/integration/e2emimir"
 )
 
 func TestRulerAPI(t *testing.T) {
@@ -729,18 +728,31 @@ func TestRulerFederatedRules(t *testing.T) {
 		BlocksStorageFlags(),
 		RulerFlags(),
 		map[string]string{
-			"-ruler.tenant-federation.enabled":  "true",
 			"-tenant-federation.enabled":        "true",
+			"-ruler.tenant-federation.enabled":  "true",
 			"-ingester.ring.replication-factor": "1",
 		},
 	)
 
+	// Start the query-frontend.
+	queryFrontend := e2emimir.NewQueryFrontend("query-frontend", flags)
+	require.NoError(t, s.Start(queryFrontend))
+	flags["-querier.frontend-address"] = queryFrontend.NetworkGRPCEndpoint()
+
+	// Use query-frontend service to evaluate rules
+	flags["-ruler.remote-querier.address"] = fmt.Sprintf("dns:///%s", queryFrontend.NetworkGRPCEndpoint())
+
 	// Start up services
 	distributor := e2emimir.NewDistributor("distributor", consul.NetworkHTTPEndpoint(), flags)
-	ruler := e2emimir.NewRuler("ruler", consul.NetworkHTTPEndpoint(), flags)
-	ingester := e2emimir.NewIngester("ingester", consul.NetworkHTTPEndpoint(), flags)
 	querier := e2emimir.NewQuerier("querier", consul.NetworkHTTPEndpoint(), flags)
-	require.NoError(t, s.StartAndWaitReady(distributor, ingester, ruler, querier))
+	ingester := e2emimir.NewIngester("ingester", consul.NetworkHTTPEndpoint(), flags)
+	ruler := e2emimir.NewRuler("ruler", consul.NetworkHTTPEndpoint(), flags)
+
+	require.NoError(t, s.StartAndWaitReady(distributor, querier, ingester, ruler))
+	require.NoError(t, s.WaitReady(queryFrontend))
+
+	// Wait until both the querier have updated the ring.
+	require.NoError(t, querier.WaitSumMetrics(e2e.Equals(512), "cortex_ring_tokens_total"))
 
 	// Wait until both the distributor and ruler are ready
 	// The distributor should have 512 tokens for the ingester ring and 1 for the distributor rin
