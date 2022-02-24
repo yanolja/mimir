@@ -10,11 +10,13 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/go-kit/log"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/rulefmt"
@@ -25,7 +27,9 @@ import (
 	"github.com/prometheus/prometheus/storage"
 	"github.com/stretchr/testify/require"
 	"github.com/weaveworks/common/httpgrpc"
+	"github.com/weaveworks/common/user"
 
+	"github.com/grafana/mimir/pkg/frontend/querymiddleware"
 	"github.com/grafana/mimir/pkg/mimirpb"
 	"github.com/grafana/mimir/pkg/ruler/rulespb"
 )
@@ -345,6 +349,67 @@ func TestManagerFactory_CorrectQueryableUsed(t *testing.T) {
 	}
 }
 
+func TestQueryShardingHandler(t *testing.T) {
+	const totalShards = 8
+
+	testCases := map[string]struct {
+		expr           string
+		expectedShards int64
+	}{
+		"non shardable rule expression": {
+			expr:           "abs(metric)",
+			expectedShards: 1,
+		},
+		"shardable rule expression": {
+			expr:           "sum(metric) / count(metric)",
+			expectedShards: 16,
+		},
+	}
+
+	shardingMetrics := querymiddleware.QueryShardingMetrics{
+		ShardingAttempts: promauto.With(prometheus.DefaultRegisterer).NewCounter(prometheus.CounterOpts{
+			Namespace: "test", Name: "query_sharding_rewrites_attempted_total",
+		}),
+		ShardingSuccesses: promauto.With(prometheus.DefaultRegisterer).NewCounter(prometheus.CounterOpts{
+			Namespace: "test", Name: "query_sharding_rewrites_succeeded_total",
+		}),
+		ShardedQueries: promauto.With(prometheus.DefaultRegisterer).NewCounter(prometheus.CounterOpts{
+			Namespace: "test", Name: "sharded_queries_total",
+		}),
+		ShardedQueriesPerQuery: promauto.With(prometheus.DefaultRegisterer).NewHistogram(prometheus.HistogramOpts{
+			Namespace: "test", Name: "sharded_queries_per_query",
+			Buckets: prometheus.ExponentialBuckets(2, 2, 10),
+		}),
+	}
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			req := encodeHandlerRequest(tc.expr, time.Now())
+
+			ctx := user.InjectOrgID(context.Background(), "user-1")
+
+			evalHnd := &mockQueryMiddlewareHandler{}
+			hnd := querymiddleware.NewQuerySharding(
+				evalHnd,
+				promql.NewEngine(promql.EngineOpts{
+					Logger:     log.NewNopLogger(),
+					Reg:        nil,
+					MaxSamples: 1000,
+					Timeout:    time.Minute,
+				}),
+				&ruleLimits{totalShards: totalShards},
+				log.NewNopLogger(),
+				shardingMetrics,
+			)
+
+			resp, err := hnd.Do(ctx, req)
+			require.NotNil(t, resp)
+			require.NoError(t, err)
+
+			require.Equal(t, tc.expectedShards, evalHnd.called)
+		})
+	}
+}
+
 func writeRuleGroupToFiles(t *testing.T, path string, logger log.Logger, userID string, ruleGroup rulespb.RuleGroupDesc) []string {
 	_, files, err := newMapper(path, logger).MapRules(userID, map[string][]rulefmt.RuleGroup{
 		"namespace": {rulespb.FromProto(&ruleGroup)},
@@ -375,4 +440,16 @@ func (m *mockQueryable) Querier(_ context.Context, _, _ int64) (storage.Querier,
 		close(m.called)
 	}
 	return storage.NoopQuerier(), nil
+}
+
+type mockQueryMiddlewareHandler struct {
+	called int64
+}
+
+func (h *mockQueryMiddlewareHandler) Do(context.Context, querymiddleware.Request) (querymiddleware.Response, error) {
+	defer atomic.AddInt64(&h.called, 1)
+	return &querymiddleware.PrometheusResponse{
+		Status: "success",
+		Data:   &querymiddleware.PrometheusData{ResultType: model.ValVector.String()},
+	}, nil
 }

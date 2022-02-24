@@ -32,6 +32,14 @@ import (
 	"github.com/grafana/mimir/pkg/util/validation"
 )
 
+// QueryShardingMetrics groups query sharding metrics.
+type QueryShardingMetrics struct {
+	ShardingAttempts       prometheus.Counter
+	ShardingSuccesses      prometheus.Counter
+	ShardedQueries         prometheus.Counter
+	ShardedQueriesPerQuery prometheus.Histogram
+}
+
 type querySharding struct {
 	limit Limits
 
@@ -39,14 +47,7 @@ type querySharding struct {
 	next   Handler
 	logger log.Logger
 
-	queryShardingMetrics
-}
-
-type queryShardingMetrics struct {
-	shardingAttempts       prometheus.Counter
-	shardingSuccesses      prometheus.Counter
-	shardedQueries         prometheus.Counter
-	shardedQueriesPerQuery prometheus.Histogram
+	QueryShardingMetrics
 }
 
 // newQueryShardingMiddleware creates a middleware that will split queries by shard.
@@ -61,23 +62,23 @@ func newQueryShardingMiddleware(
 	limit Limits,
 	registerer prometheus.Registerer,
 ) Middleware {
-	metrics := queryShardingMetrics{
-		shardingAttempts: promauto.With(registerer).NewCounter(prometheus.CounterOpts{
+	metrics := QueryShardingMetrics{
+		ShardingAttempts: promauto.With(registerer).NewCounter(prometheus.CounterOpts{
 			Namespace: "cortex",
 			Name:      "frontend_query_sharding_rewrites_attempted_total",
 			Help:      "Total number of queries the query-frontend attempted to shard.",
 		}),
-		shardingSuccesses: promauto.With(registerer).NewCounter(prometheus.CounterOpts{
+		ShardingSuccesses: promauto.With(registerer).NewCounter(prometheus.CounterOpts{
 			Namespace: "cortex",
 			Name:      "frontend_query_sharding_rewrites_succeeded_total",
 			Help:      "Total number of queries the query-frontend successfully rewritten in a shardable way.",
 		}),
-		shardedQueries: promauto.With(registerer).NewCounter(prometheus.CounterOpts{
+		ShardedQueries: promauto.With(registerer).NewCounter(prometheus.CounterOpts{
 			Namespace: "cortex",
 			Name:      "frontend_sharded_queries_total",
 			Help:      "Total number of sharded queries.",
 		}),
-		shardedQueriesPerQuery: promauto.With(registerer).NewHistogram(prometheus.HistogramOpts{
+		ShardedQueriesPerQuery: promauto.With(registerer).NewHistogram(prometheus.HistogramOpts{
 			Namespace: "cortex",
 			Name:      "frontend_sharded_queries_per_query",
 			Help:      "Number of sharded queries a single query has been rewritten to.",
@@ -85,14 +86,26 @@ func newQueryShardingMiddleware(
 		}),
 	}
 	return MiddlewareFunc(func(next Handler) Handler {
-		return &querySharding{
-			next:                 next,
-			queryShardingMetrics: metrics,
-			engine:               engine,
-			logger:               logger,
-			limit:                limit,
-		}
+		return NewQuerySharding(next, engine, limit, logger, metrics)
 	})
+}
+
+// NewQuerySharding returns a middleware handler that splits queries by shard.
+// We make this function exportable so that it can be used from other Mimir components outside the frontend.
+func NewQuerySharding(
+	next Handler,
+	engine *promql.Engine,
+	limit Limits,
+	logger log.Logger,
+	metrics QueryShardingMetrics,
+) Handler {
+	return &querySharding{
+		next:                 next,
+		engine:               engine,
+		limit:                limit,
+		logger:               logger,
+		QueryShardingMetrics: metrics,
+	}
 }
 
 func (s *querySharding) Do(ctx context.Context, r Request) (Response, error) {
@@ -110,7 +123,7 @@ func (s *querySharding) Do(ctx context.Context, r Request) (Response, error) {
 		return s.next.Do(ctx, r)
 	}
 
-	s.shardingAttempts.Inc()
+	s.ShardingAttempts.Inc()
 	shardedQuery, shardingStats, err := s.shardQuery(r.GetQuery(), totalShards)
 
 	// If an error occurred while trying to rewrite the query or the query has not been sharded,
@@ -128,9 +141,9 @@ func (s *querySharding) Do(ctx context.Context, r Request) (Response, error) {
 	level.Debug(log).Log("msg", "query has been rewritten into a shardable query", "original", r.GetQuery(), "rewritten", shardedQuery, "sharded_queries", shardingStats.GetShardedQueries())
 
 	// Update metrics.
-	s.shardingSuccesses.Inc()
-	s.shardedQueries.Add(float64(shardingStats.GetShardedQueries()))
-	s.shardedQueriesPerQuery.Observe(float64(shardingStats.GetShardedQueries()))
+	s.ShardingSuccesses.Inc()
+	s.ShardedQueries.Add(float64(shardingStats.GetShardedQueries()))
+	s.ShardedQueriesPerQuery.Observe(float64(shardingStats.GetShardedQueries()))
 
 	// Update query stats.
 	queryStats := stats.FromContext(ctx)

@@ -935,6 +935,79 @@ func TestRulerEnableAPIs(t *testing.T) {
 	}
 }
 
+func TestRulerEvalQuerySharding(t *testing.T) {
+	s, err := e2e.NewScenario(networkName)
+	require.NoError(t, err)
+	t.Cleanup(s.Close)
+
+	// Start dependencies.
+	consul := e2edb.NewConsul()
+	minio := e2edb.NewMinio(9000, blocksBucketName, rulestoreBucketName)
+	require.NoError(t, s.StartAndWaitReady(minio, consul))
+
+	flags := mergeFlags(
+		BlocksStorageFlags(),
+		RulerFlags(),
+		map[string]string{
+			"-ingester.ring.replication-factor": "1",
+		},
+	)
+
+	// Start up services
+	distributor := e2emimir.NewDistributor("distributor", consul.NetworkHTTPEndpoint(), flags)
+	ruler := e2emimir.NewRuler("ruler", consul.NetworkHTTPEndpoint(), flags)
+	ingester := e2emimir.NewIngester("ingester", consul.NetworkHTTPEndpoint(), flags)
+	querier := e2emimir.NewQuerier("querier", consul.NetworkHTTPEndpoint(), flags)
+	require.NoError(t, s.StartAndWaitReady(distributor, ingester, ruler, querier))
+
+	// Wait until both the distributor and ruler are ready
+	// The distributor should have 512 tokens for the ingester ring and 1 for the distributor rin
+	require.NoError(t, distributor.WaitSumMetrics(e2e.Equals(512+1), "cortex_ring_tokens_total"))
+	// Ruler will see 512 tokens from ingester, and 128 tokens from itself.
+	require.NoError(t, ruler.WaitSumMetrics(e2e.Equals(512+128), "cortex_ring_tokens_total"))
+
+	// Obtain total series before rule evaluation
+	totalManagersBeforeCreate, err := ruler.SumMetrics([]string{"cortex_ruler_managers_total"})
+	require.NoError(t, err)
+
+	totalSeriesBeforeEval, err := ingester.SumMetrics([]string{"cortex_ingester_memory_series"})
+	require.NoError(t, err)
+
+	// Create a client as owner tenant to upload groups and then make assertions
+	c, err := e2emimir.NewClient(distributor.HTTPEndpoint(), querier.HTTPEndpoint(), "", ruler.HTTPEndpoint(), "user-1")
+	require.NoError(t, err)
+
+	// Generate sample series
+	series, _ := generateSeries("metric", time.Now())
+
+	res, err := c.Push(series)
+	require.NoError(t, err)
+	require.Equal(t, 200, res.StatusCode)
+
+	// Create test rule group
+	namespace := "test_namespace"
+	ruleName := "rule_name"
+	g := ruleGroupWithRule("x", ruleName, "sum(metric) / count(metric)")
+	g.Interval = model.Duration(time.Second / 4)
+	require.NoError(t, c.SetRuleGroup(g, namespace))
+
+	// Make sure rule group has been properly created
+	rgs, err := c.GetRuleGroups()
+	retrievedNamespace, exists := rgs[namespace]
+	require.NoError(t, err)
+	require.True(t, exists)
+	require.Len(t, retrievedNamespace, 1)
+
+	// Wait until another user manager is created.
+	require.NoError(t, ruler.WaitSumMetrics(e2e.Equals(totalManagersBeforeCreate[0]), "cortex_ruler_managers_total"))
+
+	// Wait until rule evaluation resulting series had been pushed
+	require.NoError(t, ingester.WaitSumMetrics(e2e.Greater(totalSeriesBeforeEval[0]), "cortex_ingester_memory_series"))
+
+	// Ensure ruler evaluation sharding took place
+	require.NoError(t, ruler.WaitSumMetrics(e2e.Greater(1), "cortex_ruler_sharded_queries_total"))
+}
+
 func ruleGroupMatcher(user, namespace, groupName string) *labels.Matcher {
 	return labels.MustNewMatcher(labels.MatchEqual, "rule_group", fmt.Sprintf("data-ruler/%s/%s;%s", user, namespace, groupName))
 }

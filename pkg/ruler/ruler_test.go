@@ -75,10 +75,49 @@ func defaultRulerConfig(t testing.TB) Config {
 }
 
 type ruleLimits struct {
+	maxQueryLookback    time.Duration
+	maxQueryLength      time.Duration
+	maxCacheFreshness   time.Duration
+	maxQueryParallelism int
+	maxShardedQueries   int
+	totalShards         int
+	compactorShards     int
+
 	evalDelay            time.Duration
 	tenantShard          int
 	maxRulesPerRuleGroup int
 	maxRuleGroups        int
+}
+
+func (r ruleLimits) MaxQueryLookback(string) time.Duration {
+	return r.maxQueryLookback
+}
+
+func (r ruleLimits) MaxQueryLength(string) time.Duration {
+	return r.maxQueryLength
+}
+
+func (r ruleLimits) MaxQueryParallelism(string) int {
+	if r.maxQueryParallelism == 0 {
+		return 14 // Flag default.
+	}
+	return r.maxQueryParallelism
+}
+
+func (r ruleLimits) MaxCacheFreshness(string) time.Duration {
+	return r.maxCacheFreshness
+}
+
+func (r ruleLimits) QueryShardingTotalShards(string) int {
+	return r.totalShards
+}
+
+func (r ruleLimits) QueryShardingMaxShardedQueries(string) int {
+	return r.maxShardedQueries
+}
+
+func (r ruleLimits) CompactorSplitAndMergeShards(_ string) int {
+	return r.compactorShards
 }
 
 func (r ruleLimits) EvaluationDelay(_ string) time.Duration {

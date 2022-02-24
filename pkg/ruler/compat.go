@@ -8,6 +8,7 @@ package ruler
 import (
 	"context"
 	"errors"
+	"github.com/grafana/mimir/pkg/util/spanlogger"
 	"time"
 
 	"github.com/go-kit/log"
@@ -24,9 +25,11 @@ import (
 	"github.com/weaveworks/common/httpgrpc"
 	"github.com/weaveworks/common/user"
 
+	"github.com/grafana/mimir/pkg/frontend/querymiddleware"
 	"github.com/grafana/mimir/pkg/mimirpb"
 	"github.com/grafana/mimir/pkg/querier"
 	querier_stats "github.com/grafana/mimir/pkg/querier/stats"
+	"github.com/grafana/mimir/pkg/util"
 	util_log "github.com/grafana/mimir/pkg/util/log"
 )
 
@@ -133,6 +136,7 @@ func (t *PusherAppendable) Appender(ctx context.Context) storage.Appender {
 
 // RulesLimits defines limits used by Ruler.
 type RulesLimits interface {
+	querymiddleware.Limits
 	EvaluationDelay(userID string) time.Duration
 	RulerTenantShardSize(userID string) int
 	RulerMaxRuleGroupsPerTenant(userID string) int
@@ -141,14 +145,73 @@ type RulesLimits interface {
 
 // EngineQueryFunc returns a new query function using the rules.EngineQueryFunc function
 // and passing an altered timestamp.
-func EngineQueryFunc(engine *promql.Engine, q storage.Queryable, overrides RulesLimits, userID string) rules.QueryFunc {
+func EngineQueryFunc(engine *promql.Engine, q storage.Queryable, overrides RulesLimits, userID string, logger log.Logger, shardingMetrics querymiddleware.QueryShardingMetrics) rules.QueryFunc {
 	return func(ctx context.Context, qs string, t time.Time) (promql.Vector, error) {
-		orig := rules.EngineQueryFunc(engine, q)
+		orig := engineQueryFunc(engine, overrides, q, logger, shardingMetrics)
 		// Delay the evaluation of all rules by a set interval to give a buffer
 		// to metric that haven't been forwarded to cortex yet.
 		evaluationDelay := overrides.EvaluationDelay(userID)
 		return orig(ctx, qs, t.Add(-evaluationDelay))
 	}
+}
+
+func engineQueryFunc(engine *promql.Engine, overrides RulesLimits, q storage.Queryable, logger log.Logger, shardingMetrics querymiddleware.QueryShardingMetrics) rules.QueryFunc {
+	return func(ctx context.Context, qs string, t time.Time) (promql.Vector, error) {
+		spanLogger, ctx := spanlogger.NewWithLogger(ctx, logger, "engineQueryFunc")
+		defer spanLogger.Span.Finish()
+
+		handler := querymiddleware.NewQuerySharding(
+			newRuleEvalHandler(engine, q, spanLogger),
+			engine,
+			overrides,
+			spanLogger,
+			shardingMetrics,
+		)
+
+		// Generate instant query request object.
+		req := encodeHandlerRequest(qs, t)
+
+		// Evaluate rule.
+		resp, err := handler.Do(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		level.Debug(spanLogger).Log("msg", "rule evaluation completed", "qs", qs, "time", t)
+
+		// Decode and return handler response
+		return decodeHandlerResponse(resp)
+	}
+}
+
+func encodeHandlerRequest(qs string, t time.Time) querymiddleware.Request {
+	var req querymiddleware.PrometheusInstantQueryRequest
+	req.Query = qs
+	req.Time = util.TimeToMillis(t)
+	return &req
+}
+
+func decodeHandlerResponse(r querymiddleware.Response) (promql.Vector, error) {
+	var retVal promql.Vector
+
+	resp, ok := r.(*querymiddleware.PrometheusResponse)
+	if !ok {
+		return nil, errors.New("invalid response format")
+	}
+	if resp.Data == nil {
+		return nil, errors.New("missing response data")
+	}
+	for _, ss := range resp.Data.Result {
+		lbs := mimirpb.FromLabelAdaptersToLabels(ss.Labels)
+
+		for i := 0; i < len(ss.Samples); i++ {
+			smp := ss.Samples[i]
+			retVal = append(retVal, promql.Sample{
+				Point:  promql.Point{T: smp.TimestampMs, V: smp.Value},
+				Metric: lbs,
+			})
+		}
+	}
+	return retVal, nil
 }
 
 func MetricsQueryFunc(qf rules.QueryFunc, queries, failedQueries prometheus.Counter) rules.QueryFunc {
@@ -270,6 +333,30 @@ func DefaultTenantManagerFactory(cfg Config, p Pusher, queryable, federatedQuery
 		}, []string{"user"})
 	}
 
+	shardingMetrics := querymiddleware.QueryShardingMetrics{
+		ShardingAttempts: promauto.With(prometheus.DefaultRegisterer).NewCounter(prometheus.CounterOpts{
+			Namespace: "cortex",
+			Name:      "ruler_query_sharding_rewrites_attempted_total",
+			Help:      "Total number of queries the ruler attempted to shard.",
+		}),
+		ShardingSuccesses: promauto.With(prometheus.DefaultRegisterer).NewCounter(prometheus.CounterOpts{
+			Namespace: "cortex",
+			Name:      "ruler_query_sharding_rewrites_succeeded_total",
+			Help:      "Total number of queries the ruler successfully rewritten in a shardable way.",
+		}),
+		ShardedQueries: promauto.With(prometheus.DefaultRegisterer).NewCounter(prometheus.CounterOpts{
+			Namespace: "cortex",
+			Name:      "ruler_sharded_queries_total",
+			Help:      "Total number of sharded queries.",
+		}),
+		ShardedQueriesPerQuery: promauto.With(prometheus.DefaultRegisterer).NewHistogram(prometheus.HistogramOpts{
+			Namespace: "cortex",
+			Name:      "ruler_sharded_queries_per_query",
+			Help:      "Number of sharded queries a single query has been rewritten to.",
+			Buckets:   prometheus.ExponentialBuckets(2, 2, 10),
+		}),
+	}
+
 	return func(ctx context.Context, userID string, notifier *notifier.Manager, logger log.Logger, reg prometheus.Registerer) RulesManager {
 		var queryTime prometheus.Counter = nil
 		if rulerQuerySeconds != nil {
@@ -282,7 +369,7 @@ func DefaultTenantManagerFactory(cfg Config, p Pusher, queryable, federatedQuery
 			// Errors from PromQL are always "user" errors.
 			q = querier.NewErrorTranslateQueryableWithFn(q, WrapQueryableErrors)
 
-			queryFunc = EngineQueryFunc(engine, q, overrides, userID)
+			queryFunc = EngineQueryFunc(engine, q, overrides, userID, logger, shardingMetrics)
 			queryFunc = MetricsQueryFunc(queryFunc, totalQueries, failedQueries)
 			queryFunc = RecordAndReportRuleQueryMetrics(queryFunc, queryTime, logger)
 			return queryFunc
