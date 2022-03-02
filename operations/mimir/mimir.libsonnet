@@ -1,3 +1,8 @@
+/**
+ * @fileoverview
+ * Kubernetes resources to run Mimir and services upon which Mimir depends.
+ * @mixes common.libsonnet
+ */
 (import 'ksonnet-util/kausal.libsonnet') +
 (import 'jaeger-agent-mixin/jaeger.libsonnet') +
 (import 'images.libsonnet') +

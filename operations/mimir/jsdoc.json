@@ -1,0 +1,8 @@
+{
+    "source": {
+        "includePattern": ".+\\.(j|lib)sonnet$"
+    },
+    "plugins": [
+        "plugins/jsonnet"
+    ]
+}

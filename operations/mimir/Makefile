@@ -11,6 +11,7 @@ help: ## Display this help
 help:
 	@awk 'BEGIN {FS = ": ##"; printf "Usage:\n  make <target>\n\nTargets:\n"} /^[a-zA-Z0-9_\.\-\/%]+: ##/ { printf "  %-45s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
+JSONNET_FILES := $(shell find -name 'vendor' -prune -o -name '*.jsonnet' -o -name '*.libsonnet')
 JSONNET_FLAGS := -J test -J test/vendor
 KUBERNETES_LIB := github.com/jsonnet-libs/k8s-libsonnet/1.22
 
@@ -48,3 +49,10 @@ test/%-test.golden: %-test.jsonnet %.jsonnet %.libsonnet test/k.libsonnet test/v
 		mkdir -p "$@/$$(dirname $$f)"
 		jsonnet $(JSONNET_FLAGS) -e "(import '$<')['$$f']" &> "$@/$$f" || true
 	done
+
+doc/index.html: ## Generate JSDoc documentation for the library files.
+doc/index.html: $(JSONNET_FILES) plugins/jsonnet.js
+	mkdir -p $(@D)
+	mv $(@D){,.old}
+	trap "if [[ -d $(@D) ]]; then rm -rf $(@D).old; else mv $(@D){.old,}; fi" EXIT
+	jsdoc --configure jsdoc.json -d $(@D) $(JSONNET_FILES)
