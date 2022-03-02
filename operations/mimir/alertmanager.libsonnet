@@ -83,7 +83,7 @@
 
   alertmanager_service:
     if $._config.alertmanager_enabled then
-      $.util.serviceFor($.alertmanager_statefulset, $._config.service_ignored_labels) +
+      $.util.serviceForUsingNamedPorts($.alertmanager_statefulset, $._config.service_ignored_labels) +
       service.mixin.spec.withClusterIp('None')
     else {},
 }

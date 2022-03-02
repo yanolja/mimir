@@ -47,5 +47,5 @@
     deployment.mixin.metadata.withLabels({ name: name }),
 
   overrides_exporter_service:
-    $.util.serviceFor($.overrides_exporter_deployment, $._config.service_ignored_labels),
+    $.util.serviceForUsingNamedPorts($.overrides_exporter_deployment, $._config.service_ignored_labels),
 }

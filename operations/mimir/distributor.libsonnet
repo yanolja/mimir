@@ -60,6 +60,6 @@
   local service = $.core.v1.service,
 
   distributor_service:
-    $.util.serviceFor($.distributor_deployment, $._config.service_ignored_labels) +
-    service.mixin.spec.withClusterIp('None'),
+    $.util.serviceForUsingNamedPorts($.distributor_deployment, $._config.service_ignored_labels)
+    + service.spec.withClusterIp('None'),
 }

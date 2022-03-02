@@ -19,7 +19,7 @@ memcached {
     local service = $.core.v1.service,
 
     service:
-      $.util.serviceFor(self.statefulSet) +
+      $.util.serviceForUsingNamedPorts(self.statefulSet) +
       service.mixin.spec.withClusterIp('None'),
   },
 

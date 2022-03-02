@@ -93,7 +93,7 @@
   ingester_statefulset: self.newIngesterStatefulSet('ingester', $.ingester_container),
 
   ingester_service:
-    $.util.serviceFor($.ingester_statefulset, $._config.service_ignored_labels),
+    $.util.serviceForUsingNamedPorts($.ingester_statefulset, $._config.service_ignored_labels),
 
   newIngesterPdb(pdbName, ingesterName)::
     podDisruptionBudget.new() +
