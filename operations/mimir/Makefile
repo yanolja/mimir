@@ -50,6 +50,10 @@ test/%-test.golden: %-test.jsonnet %.jsonnet %.libsonnet test/k.libsonnet test/v
 		jsonnet $(JSONNET_FLAGS) -e "(import '$<')['$$f']" &> "$@/$$f" || true
 	done
 
+doc.md: ## Generate Markdown documentation.
+doc.md: $(JSONNET_FILES) plugins/jsonnet.js
+	./node_modules/jsdoc-to-markdown/bin/cli.js --configure jsdoc.json --files $(JSONNET_FILES) > $@
+
 doc/index.html: ## Generate JSDoc documentation for the library files.
 doc/index.html: $(JSONNET_FILES) plugins/jsonnet.js
 	mkdir -p $(@D)
