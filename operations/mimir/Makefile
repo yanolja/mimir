@@ -33,7 +33,7 @@ test/jsonnetfile.lock.json: test/jsonnetfile.json
 test/vendor: ## Update Jsonnet vendoring to match the lock file contents.
 test/vendor: test/jsonnetfile.lock.json test/jsonnetfile.json
 	cd $(@D) && jb update
-	touch $@
+	touch $(@F)
 
 test/k.libsonnet: ## Create the Kubernetes Jsonnet library file that is assumed to exist by other Jsonnet libraries.
 test/k.libsonnet: test/jsonnetfile.json
