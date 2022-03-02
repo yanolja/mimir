@@ -1,0 +1,11 @@
+RUNTIME ERROR: serviceForUsingNamedPorts: all container ports must have a name.
+.spec.container[0].ports[0] is missing a name.
+
+	common.libsonnet:(41:19)-(44:31)	
+	Checking object assertions	
+	Array element 0	
+	Array element 0	
+	Field "ports"	
+	Field "spec"	
+	During manifestation	
+
