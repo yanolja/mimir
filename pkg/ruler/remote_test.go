@@ -17,8 +17,8 @@ import (
 	"github.com/weaveworks/common/httpgrpc"
 	"github.com/weaveworks/common/user"
 
+	"github.com/grafana/mimir/pkg/ruler/remotequerier"
 	"github.com/grafana/mimir/pkg/tenant"
-	"github.com/grafana/mimir/pkg/util/remotequerier"
 )
 
 type mockRoundTripper struct {
