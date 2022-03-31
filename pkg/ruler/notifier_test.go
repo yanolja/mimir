@@ -201,7 +201,7 @@ func TestBuildNotifierConfig(t *testing.T) {
 				Notifier: NotifierConfig{
 					BasicAuth: util.BasicAuth{
 						Username: "jacob",
-						Password: secretWithValue("test"),
+						Password: flagext.SecretWithValue("test"),
 					},
 				},
 			},
@@ -298,10 +298,4 @@ func TestBuildNotifierConfig(t *testing.T) {
 			}
 		})
 	}
-}
-
-func secretWithValue(v string) flagext.Secret {
-	s := flagext.Secret{}
-	_ = s.Set(v)
-	return s
 }
