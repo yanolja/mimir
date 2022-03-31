@@ -44,7 +44,7 @@ Experimental configuration and flags are subject to change.
 The following features are currently experimental:
 
 - Ruler: Tenant federation
-- Distributor: Metrics relabeling
+- Distributor: Metrics relabeling, OTLP ingestion path.
 - Purger: Tenant deletion API
 - Exemplar storage
   - `-ingester.max-global-exemplars-per-user`
