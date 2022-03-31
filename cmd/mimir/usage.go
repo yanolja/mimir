@@ -13,7 +13,7 @@ import (
 	"github.com/grafana/mimir/pkg/util/fieldcategory"
 )
 
-// usage prints command-line usage. If mf.printHelpAll is false then only basic flags are included, otherwise all flags are included.
+// usage prints command-line usage. If mf.PrintHelpAll is false then only basic flags are included, otherwise all flags are included.
 func usage(mf *mainFlags, cfg *mimir.Config) error {
 	fields := map[uintptr]reflect.StructField{}
 	if err := parseStructure(mf, fields); err != nil {
@@ -46,7 +46,7 @@ func usage(mf *mainFlags, cfg *mimir.Config) error {
 			}
 		}
 
-		if fieldCat != fieldcategory.Basic && !mf.printHelpAll {
+		if fieldCat != fieldcategory.Basic && !mf.PrintHelpAll {
 			// Don't print help for this flag since we're supposed to print only basic flags
 			return
 		}
@@ -82,7 +82,7 @@ func usage(mf *mainFlags, cfg *mimir.Config) error {
 		fmt.Fprint(fs.Output(), b.String(), "\n")
 	})
 
-	if !mf.printHelpAll {
+	if !mf.PrintHelpAll {
 		fmt.Fprintf(fs.Output(), "\nTo see all flags, use -help-all\n")
 	}
 
@@ -122,6 +122,11 @@ func parseStructure(structure interface{}, fields map[uintptr]reflect.StructFiel
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		if field.Type.Kind() == reflect.Func {
+			continue
+		}
+
+		// Ignore unexported fields. (They cannot be not part of YAML config.)
+		if !field.IsExported() {
 			continue
 		}
 

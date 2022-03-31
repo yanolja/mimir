@@ -52,24 +52,25 @@ const (
 var testMode = false
 
 type mainFlags struct {
-	ballastBytes         int `category:"advanced"`
-	mutexProfileFraction int `category:"advanced"`
-	blockProfileRate     int `category:"advanced"`
-	printVersion         bool
-	printModules         bool
-	printHelp            bool
-	printHelpAll         bool
+	// Flags-usage code (parseStructure method) only considers flags that are public.
+	BallastBytes         int `category:"advanced"`
+	MutexProfileFraction int `category:"advanced"`
+	BlockProfileRate     int `category:"advanced"`
+	PrintVersion         bool
+	PrintModules         bool
+	PrintHelp            bool
+	PrintHelpAll         bool
 }
 
 func (mf *mainFlags) registerFlags(fs *flag.FlagSet) {
-	fs.IntVar(&mf.ballastBytes, "mem-ballast-size-bytes", 0, "Size of memory ballast to allocate.")
-	fs.IntVar(&mf.mutexProfileFraction, "debug.mutex-profile-fraction", 0, "Fraction of mutex contention events that are reported in the mutex profile. On average 1/rate events are reported. 0 to disable.")
-	fs.IntVar(&mf.blockProfileRate, "debug.block-profile-rate", 0, "Fraction of goroutine blocking events that are reported in the blocking profile. 1 to include every blocking event in the profile, 0 to disable.")
-	fs.BoolVar(&mf.printVersion, "version", false, "Print application version and exit.")
-	fs.BoolVar(&mf.printModules, "modules", false, "List available values that can be used as target.")
-	fs.BoolVar(&mf.printHelp, "help", false, "Print basic help.")
-	fs.BoolVar(&mf.printHelp, "h", false, "Print basic help.")
-	fs.BoolVar(&mf.printHelpAll, "help-all", false, "Print help, also including advanced and experimental parameters.")
+	fs.IntVar(&mf.BallastBytes, "mem-ballast-size-bytes", 0, "Size of memory ballast to allocate.")
+	fs.IntVar(&mf.MutexProfileFraction, "debug.mutex-profile-fraction", 0, "Fraction of mutex contention events that are reported in the mutex profile. On average 1/rate events are reported. 0 to disable.")
+	fs.IntVar(&mf.BlockProfileRate, "debug.block-profile-rate", 0, "Fraction of goroutine blocking events that are reported in the blocking profile. 1 to include every blocking event in the profile, 0 to disable.")
+	fs.BoolVar(&mf.PrintVersion, "version", false, "Print application version and exit.")
+	fs.BoolVar(&mf.PrintModules, "modules", false, "List available values that can be used as target.")
+	fs.BoolVar(&mf.PrintHelp, "help", false, "Print basic help.")
+	fs.BoolVar(&mf.PrintHelp, "h", false, "Print basic help.")
+	fs.BoolVar(&mf.PrintHelpAll, "help-all", false, "Print help, also including advanced and experimental parameters.")
 }
 
 func main() {
@@ -110,7 +111,7 @@ func main() {
 		}
 	}
 
-	if mainFlags.printHelp || mainFlags.printHelpAll {
+	if mainFlags.PrintHelp || mainFlags.PrintHelpAll {
 		// Print available parameters to stdout, so that users can grep/less them easily.
 		flag.CommandLine.SetOutput(os.Stdout)
 		if err := usage(&mainFlags, &cfg); err != nil {
@@ -124,7 +125,7 @@ func main() {
 		return
 	}
 
-	if mainFlags.printVersion {
+	if mainFlags.PrintVersion {
 		fmt.Fprintln(os.Stdout, version.Print("Mimir"))
 		return
 	}
@@ -140,22 +141,22 @@ func main() {
 
 	// Continue on if -modules flag is given. Code handling the
 	// -modules flag will not start mimir.
-	if testMode && !mainFlags.printModules {
+	if testMode && !mainFlags.PrintModules {
 		DumpYaml(&cfg)
 		return
 	}
 
-	if mainFlags.mutexProfileFraction > 0 {
-		runtime.SetMutexProfileFraction(mainFlags.mutexProfileFraction)
+	if mainFlags.MutexProfileFraction > 0 {
+		runtime.SetMutexProfileFraction(mainFlags.MutexProfileFraction)
 	}
-	if mainFlags.blockProfileRate > 0 {
-		runtime.SetBlockProfileRate(mainFlags.blockProfileRate)
+	if mainFlags.BlockProfileRate > 0 {
+		runtime.SetBlockProfileRate(mainFlags.BlockProfileRate)
 	}
 
 	util_log.InitLogger(&cfg.Server)
 
 	// Allocate a block of memory to alter GC behaviour. See https://github.com/golang/go/issues/23044
-	ballast := make([]byte, mainFlags.ballastBytes)
+	ballast := make([]byte, mainFlags.BallastBytes)
 
 	// In testing mode skip JAEGER setup to avoid panic due to
 	// "duplicate metrics collector registration attempted"
@@ -179,7 +180,7 @@ func main() {
 	t, err := mimir.New(cfg)
 	util_log.CheckFatal("initializing application", err)
 
-	if mainFlags.printModules {
+	if mainFlags.PrintModules {
 		allDeps := t.ModuleManager.DependenciesForModule(mimir.All)
 
 		for _, m := range t.ModuleManager.UserVisibleModuleNames() {
