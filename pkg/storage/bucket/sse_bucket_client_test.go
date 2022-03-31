@@ -56,7 +56,7 @@ func TestSSEBucketClient_Upload_ShouldInjectCustomSSEConfig(t *testing.T) {
 				Endpoint:        srv.Listener.Addr().String(),
 				Region:          "test",
 				BucketName:      "test-bucket",
-				SecretAccessKey: flagext.Secret{Value: "test"},
+				SecretAccessKey: secretWithValue("test"),
 				AccessKeyID:     "test",
 				Insecure:        true,
 			}
@@ -126,4 +126,10 @@ func (m *mockTenantConfigProvider) S3SSEKMSKeyID(_ string) string {
 
 func (m *mockTenantConfigProvider) S3SSEKMSEncryptionContext(_ string) string {
 	return m.s3KmsEncryptionContext
+}
+
+func secretWithValue(v string) flagext.Secret {
+	s := flagext.Secret{}
+	_ = s.Set(v)
+	return s
 }

@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/go-kit/log"
-	"github.com/grafana/dskit/flagext"
 	"github.com/grafana/e2e"
 	e2edb "github.com/grafana/e2e/db"
 	"github.com/oklog/ulid"
@@ -43,13 +42,14 @@ func NewS3Client(cfg s3.Config) (*S3Client, error) {
 }
 
 func NewS3ClientForMinio(minio *e2e.HTTPService, bucketName string) (*S3Client, error) {
-	return NewS3Client(s3.Config{
-		Endpoint:        minio.HTTPEndpoint(),
-		BucketName:      bucketName,
-		SecretAccessKey: flagext.Secret{Value: e2edb.MinioSecretKey},
-		AccessKeyID:     e2edb.MinioAccessKey,
-		Insecure:        true,
-	})
+	cfg := s3.Config{
+		Endpoint:    minio.HTTPEndpoint(),
+		BucketName:  bucketName,
+		AccessKeyID: e2edb.MinioAccessKey,
+		Insecure:    true,
+	}
+	cfg.SecretAccessKey.Set(e2edb.MinioSecretKey)
+	return NewS3Client(cfg)
 }
 
 // DeleteBlocks deletes all blocks for a tenant.
