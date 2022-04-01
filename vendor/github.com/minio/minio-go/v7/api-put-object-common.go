@@ -26,8 +26,6 @@ import (
 	"github.com/minio/minio-go/v7/pkg/s3utils"
 )
 
-const nullVersionID = "null"
-
 // Verify if reader is *minio.Object
 func isObject(reader io.Reader) (ok bool) {
 	_, ok = reader.(*Object)
@@ -59,17 +57,17 @@ func isReadAt(reader io.Reader) (ok bool) {
 	return
 }
 
-// OptimalPartInfo - calculate the optimal part info for a given
+// optimalPartInfo - calculate the optimal part info for a given
 // object size.
 //
 // NOTE: Assumption here is that for any object to be uploaded to any S3 compatible
 // object storage it will have the following parameters as constants.
 //
 //  maxPartsCount - 10000
-//  minPartSize - 16MiB
+//  minPartSize - 128MiB
 //  maxMultipartPutObjectSize - 5TiB
 //
-func OptimalPartInfo(objectSize int64, configuredPartSize uint64) (totalPartsCount int, partSize int64, lastPartSize int64, err error) {
+func optimalPartInfo(objectSize int64, configuredPartSize uint64) (totalPartsCount int, partSize int64, lastPartSize int64, err error) {
 	// object size is '-1' set it to 5TiB.
 	var unknownSize bool
 	if objectSize == -1 {
@@ -132,7 +130,7 @@ func OptimalPartInfo(objectSize int64, configuredPartSize uint64) (totalPartsCou
 
 // getUploadID - fetch upload id if already present for an object name
 // or initiate a new request to fetch a new upload id.
-func (c *Client) newUploadID(ctx context.Context, bucketName, objectName string, opts PutObjectOptions) (uploadID string, err error) {
+func (c Client) newUploadID(ctx context.Context, bucketName, objectName string, opts PutObjectOptions) (uploadID string, err error) {
 	// Input validation.
 	if err := s3utils.CheckValidBucketName(bucketName); err != nil {
 		return "", err
