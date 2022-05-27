@@ -8,8 +8,6 @@ package querier
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
-	"os"
 	"strconv"
 	"testing"
 	"time"
@@ -211,7 +209,7 @@ func TestQuerier_QueryableReturnsChunksOutsideQueriedRange(t *testing.T) {
 	})
 
 	queryable, _, _ := New(cfg, overrides, distributor, nil, nil, logger, nil)
-	query, err := engine.NewRangeQuery(queryable, `sum({__name__=~".+"})`, queryStart, queryEnd, queryStep)
+	query, err := engine.NewRangeQuery(queryable, nil, `sum({__name__=~".+"})`, queryStart, queryEnd, queryStep)
 	require.NoError(t, err)
 
 	ctx := user.InjectOrgID(context.Background(), "user-1")
@@ -231,12 +229,7 @@ func TestQuerier_QueryableReturnsChunksOutsideQueriedRange(t *testing.T) {
 }
 
 func mockTSDB(t *testing.T, mint model.Time, samples int, step, chunkOffset time.Duration, samplesPerChunk int) (storage.Queryable, model.Time) {
-	dir, err := ioutil.TempDir("", "tsdb")
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		_ = os.RemoveAll(dir)
-	})
+	dir := t.TempDir()
 
 	opts := tsdb.DefaultHeadOptions()
 	opts.ChunkDirRoot = dir
@@ -322,9 +315,7 @@ func TestQuerier_QueryIngestersWithinConfig(t *testing.T) {
 		},
 	}
 
-	dir, err := ioutil.TempDir("", t.Name())
-	assert.NoError(t, err)
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 	queryTracker := promql.NewActiveQueryTracker(dir, 10, log.NewNopLogger())
 
 	engine := promql.NewEngine(promql.EngineOpts{
@@ -347,7 +338,7 @@ func TestQuerier_QueryIngestersWithinConfig(t *testing.T) {
 			var storeQueryables []QueryableWithFilter
 
 			queryable, _, _ := New(cfg, overrides, distributor, storeQueryables, nil, log.NewNopLogger(), nil)
-			query, err := engine.NewRangeQuery(queryable, "dummy", c.mint, c.maxt, 1*time.Minute)
+			query, err := engine.NewRangeQuery(queryable, nil, "dummy", c.mint, c.maxt, 1*time.Minute)
 			require.NoError(t, err)
 
 			ctx := user.InjectOrgID(context.Background(), "0")
@@ -431,7 +422,7 @@ func TestQuerier_ValidateQueryTimeRange_MaxQueryIntoFuture(t *testing.T) {
 			require.NoError(t, err)
 
 			queryable, _, _ := New(cfg, overrides, distributor, nil, nil, log.NewNopLogger(), nil)
-			query, err := engine.NewRangeQuery(queryable, "dummy", c.queryStartTime, c.queryEndTime, time.Minute)
+			query, err := engine.NewRangeQuery(queryable, nil, "dummy", c.queryStartTime, c.queryEndTime, time.Minute)
 			require.NoError(t, err)
 
 			ctx := user.InjectOrgID(context.Background(), "0")
@@ -512,7 +503,7 @@ func TestQuerier_ValidateQueryTimeRange_MaxQueryLength(t *testing.T) {
 				Timeout:            1 * time.Minute,
 			})
 
-			query, err := engine.NewRangeQuery(queryable, testData.query, testData.queryStartTime, testData.queryEndTime, time.Minute)
+			query, err := engine.NewRangeQuery(queryable, nil, testData.query, testData.queryStartTime, testData.queryEndTime, time.Minute)
 			require.NoError(t, err)
 
 			ctx := user.InjectOrgID(context.Background(), "test")
@@ -626,7 +617,7 @@ func TestQuerier_ValidateQueryTimeRange_MaxQueryLookback(t *testing.T) {
 				queryable, _, _ := New(cfg, overrides, distributor, nil, nil, log.NewNopLogger(), nil)
 				require.NoError(t, err)
 
-				query, err := engine.NewRangeQuery(queryable, testData.query, testData.queryStartTime, testData.queryEndTime, time.Minute)
+				query, err := engine.NewRangeQuery(queryable, nil, testData.query, testData.queryStartTime, testData.queryEndTime, time.Minute)
 				require.NoError(t, err)
 
 				r := query.Exec(ctx)
@@ -649,7 +640,7 @@ func TestQuerier_ValidateQueryTimeRange_MaxQueryLookback(t *testing.T) {
 
 			t.Run("series", func(t *testing.T) {
 				distributor := &mockDistributor{}
-				distributor.On("MetricsForLabelMatchers", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return([]model.Metric{}, nil)
+				distributor.On("MetricsForLabelMatchers", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return([]labels.Labels{}, nil)
 
 				queryable, _, _ := New(cfg, overrides, distributor, nil, nil, log.NewNopLogger(), nil)
 				q, err := queryable.Querier(ctx, util.TimeToMillis(testData.queryStartTime), util.TimeToMillis(testData.queryEndTime))
@@ -780,7 +771,7 @@ func TestQuerier_MaxLabelsQueryRange(t *testing.T) {
 
 			t.Run("series", func(t *testing.T) {
 				distributor := &mockDistributor{}
-				distributor.On("MetricsForLabelMatchers", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return([]model.Metric{}, nil)
+				distributor.On("MetricsForLabelMatchers", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return([]labels.Labels{}, nil)
 
 				queryable, _, _ := New(cfg, overrides, distributor, storeQueryable, nil, log.NewNopLogger(), nil)
 				q, err := queryable.Querier(ctx, util.TimeToMillis(testData.queryStartTime), util.TimeToMillis(testData.queryEndTime))
@@ -810,9 +801,7 @@ func TestQuerier_MaxLabelsQueryRange(t *testing.T) {
 }
 
 func testRangeQuery(t testing.TB, queryable storage.Queryable, end model.Time, q query) *promql.Result {
-	dir, err := ioutil.TempDir("", "test_query")
-	assert.NoError(t, err)
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 	queryTracker := promql.NewActiveQueryTracker(dir, 10, log.NewNopLogger())
 
 	from, through, step := time.Unix(0, 0), end.Time(), q.step
@@ -822,7 +811,7 @@ func testRangeQuery(t testing.TB, queryable storage.Queryable, end model.Time, q
 		MaxSamples:         1e6,
 		Timeout:            1 * time.Minute,
 	})
-	query, err := engine.NewRangeQuery(queryable, q.query, from, through, step)
+	query, err := engine.NewRangeQuery(queryable, nil, q.query, from, through, step)
 	require.NoError(t, err)
 
 	ctx := user.InjectOrgID(context.Background(), "0")
@@ -867,7 +856,7 @@ func (m *errDistributor) LabelValuesForLabelName(context.Context, model.Time, mo
 func (m *errDistributor) LabelNames(context.Context, model.Time, model.Time, ...*labels.Matcher) ([]string, error) {
 	return nil, errDistributorError
 }
-func (m *errDistributor) MetricsForLabelMatchers(ctx context.Context, from, through model.Time, matchers ...*labels.Matcher) ([]model.Metric, error) {
+func (m *errDistributor) MetricsForLabelMatchers(ctx context.Context, from, through model.Time, matchers ...*labels.Matcher) ([]labels.Labels, error) {
 	return nil, errDistributorError
 }
 
@@ -905,7 +894,7 @@ func (d *emptyDistributor) LabelNames(context.Context, model.Time, model.Time, .
 	return nil, nil
 }
 
-func (d *emptyDistributor) MetricsForLabelMatchers(ctx context.Context, from, through model.Time, matchers ...*labels.Matcher) ([]model.Metric, error) {
+func (d *emptyDistributor) MetricsForLabelMatchers(ctx context.Context, from, through model.Time, matchers ...*labels.Matcher) ([]labels.Labels, error) {
 	return nil, nil
 }
 
@@ -955,9 +944,7 @@ func TestQuerier_QueryStoreAfterConfig(t *testing.T) {
 		},
 	}
 
-	dir, err := ioutil.TempDir("", t.Name())
-	assert.NoError(t, err)
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 	queryTracker := promql.NewActiveQueryTracker(dir, 10, log.NewNopLogger())
 
 	engine := promql.NewEngine(promql.EngineOpts{
@@ -986,7 +973,7 @@ func TestQuerier_QueryStoreAfterConfig(t *testing.T) {
 			querier.On("Select", true, mock.Anything, expectedMatchers).Return(storage.EmptySeriesSet())
 
 			queryable, _, _ := New(cfg, overrides, distributor, []QueryableWithFilter{UseAlwaysQueryable(newMockBlocksStorageQueryable(querier))}, nil, log.NewNopLogger(), nil)
-			query, err := engine.NewRangeQuery(queryable, "metric", c.mint, c.maxt, 1*time.Minute)
+			query, err := engine.NewRangeQuery(queryable, nil, "metric", c.mint, c.maxt, 1*time.Minute)
 			require.NoError(t, err)
 
 			ctx := user.InjectOrgID(context.Background(), "0")
@@ -1078,6 +1065,19 @@ func TestConfig_Validate(t *testing.T) {
 				cfg.ShuffleShardingIngestersLookbackPeriod = time.Minute
 			},
 			expected: errShuffleShardingLookbackLessThanQueryStoreAfter,
+		},
+		"should pass if both 'query store after' and 'query ingesters within' are set and 'query store after' < 'query ingesters within'": {
+			setup: func(cfg *Config) {
+				cfg.QueryStoreAfter = time.Hour
+				cfg.QueryIngestersWithin = 2 * time.Hour
+			},
+		},
+		"should fail if both 'query store after' and 'query ingesters within' are set and 'query store after' > 'query ingesters within'": {
+			setup: func(cfg *Config) {
+				cfg.QueryStoreAfter = 3 * time.Hour
+				cfg.QueryIngestersWithin = 2 * time.Hour
+			},
+			expected: errBadLookbackConfigs,
 		},
 	}
 

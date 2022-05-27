@@ -94,6 +94,7 @@
     statefulSet.mixin.spec.updateStrategy.withType('OnDelete') +
     statefulSet.mixin.spec.template.spec.withTerminationGracePeriodSeconds(1200) +
     statefulSet.mixin.spec.withReplicas(std.ceil($._config.multi_zone_ingester_replicas / 3)) +
+    (if !std.isObject($._config.node_selector) then {} else statefulSet.mixin.spec.template.spec.withNodeSelectorMixin($._config.node_selector)) +
     if $._config.ingester_allow_multiple_replicas_on_same_node then {} else {
       spec+:
         // Allow to schedule 2+ ingesters in the same zone on the same node, but do not schedule 2+ ingesters in
@@ -181,18 +182,24 @@
   // Multi-zone store-gateways.
   //
 
-  newStoreGatewayZoneContainer(zone)::
+  store_gateway_zone_a_args:: {},
+  store_gateway_zone_b_args:: {},
+  store_gateway_zone_c_args:: {},
+
+  newStoreGatewayZoneContainer(zone, zone_args)::
     $.store_gateway_container +
-    container.withArgs($.util.mapToFlags($.store_gateway_args {
-      'store-gateway.sharding-ring.instance-availability-zone': 'zone-%s' % zone,
-      'store-gateway.sharding-ring.zone-awareness-enabled': true,
+    container.withArgs($.util.mapToFlags(
+      $.store_gateway_args + zone_args + {
+        'store-gateway.sharding-ring.instance-availability-zone': 'zone-%s' % zone,
+        'store-gateway.sharding-ring.zone-awareness-enabled': true,
 
-      // Use a different prefix so that both single-zone and multi-zone store-gateway rings can co-exists.
-      'store-gateway.sharding-ring.prefix': 'multi-zone/',
+        // Use a different prefix so that both single-zone and multi-zone store-gateway rings can co-exists.
+        'store-gateway.sharding-ring.prefix': 'multi-zone/',
 
-      // Do not unregister from ring at shutdown, so that no blocks re-shuffling occurs during rollouts.
-      'store-gateway.sharding-ring.unregister-on-shutdown': false,
-    })),
+        // Do not unregister from ring at shutdown, so that no blocks re-shuffling occurs during rollouts.
+        'store-gateway.sharding-ring.unregister-on-shutdown': false,
+      }
+    )),
 
   newStoreGatewayZoneStatefulSet(zone, container)::
     local name = 'store-gateway-zone-%s' % zone;
@@ -203,7 +210,21 @@
     statefulSet.mixin.spec.template.metadata.withLabels({ name: name, 'rollout-group': 'store-gateway' }) +
     statefulSet.mixin.spec.selector.withMatchLabels({ name: name, 'rollout-group': 'store-gateway' }) +
     statefulSet.mixin.spec.updateStrategy.withType('OnDelete') +
-    statefulSet.mixin.spec.withReplicas(std.ceil($._config.multi_zone_store_gateway_replicas / 3)),
+    statefulSet.mixin.spec.withReplicas(std.ceil($._config.multi_zone_store_gateway_replicas / 3)) +
+    if $._config.store_gateway_allow_multiple_replicas_on_same_node then {} else {
+      spec+:
+        // Allow to schedule 2+ store-gateways in the same zone on the same node, but do not schedule 2+ store-gateways in
+        // different zones on the same node. In case of 1 node failure in the Kubernetes cluster, only store-gateways
+        // in 1 zone will be affected.
+        podAntiAffinity.withRequiredDuringSchedulingIgnoredDuringExecution([
+          podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecutionType.new() +
+          podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecutionType.mixin.labelSelector.withMatchExpressions([
+            { key: 'rollout-group', operator: 'In', values: ['store-gateway'] },
+            { key: 'name', operator: 'NotIn', values: [name] },
+          ]) +
+          podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecutionType.withTopologyKey('kubernetes.io/hostname'),
+        ]).spec,
+    },
 
   // Creates a headless service for the per-zone store-gateways StatefulSet. We don't use it
   // but we need to create it anyway because it's responsible for the network identity of
@@ -222,7 +243,7 @@
   },
 
   store_gateway_zone_a_container:: if !$._config.multi_zone_store_gateway_enabled then null else
-    self.newStoreGatewayZoneContainer('a'),
+    self.newStoreGatewayZoneContainer('a', $.store_gateway_zone_a_args),
 
   store_gateway_zone_a_statefulset: if !$._config.multi_zone_store_gateway_enabled then null else
     (self + nonRetainablePVCs).newStoreGatewayZoneStatefulSet('a', $.store_gateway_zone_a_container),
@@ -231,7 +252,7 @@
     self.newStoreGatewayZoneService($.store_gateway_zone_a_statefulset),
 
   store_gateway_zone_b_container:: if !$._config.multi_zone_store_gateway_enabled then null else
-    self.newStoreGatewayZoneContainer('b'),
+    self.newStoreGatewayZoneContainer('b', $.store_gateway_zone_b_args),
 
   store_gateway_zone_b_statefulset: if !$._config.multi_zone_store_gateway_enabled then null else
     (self + nonRetainablePVCs).newStoreGatewayZoneStatefulSet('b', $.store_gateway_zone_b_container),
@@ -240,7 +261,7 @@
     self.newStoreGatewayZoneService($.store_gateway_zone_b_statefulset),
 
   store_gateway_zone_c_container:: if !$._config.multi_zone_store_gateway_enabled then null else
-    self.newStoreGatewayZoneContainer('c'),
+    self.newStoreGatewayZoneContainer('c', $.store_gateway_zone_c_args),
 
   store_gateway_zone_c_statefulset: if !$._config.multi_zone_store_gateway_enabled then null else
     (self + nonRetainablePVCs).newStoreGatewayZoneStatefulSet('c', $.store_gateway_zone_c_container),

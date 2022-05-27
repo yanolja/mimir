@@ -24,7 +24,10 @@ Usage of ./cmd/mimir/mimir:
   -alertmanager-storage.gcs.bucket-name string
     	GCS bucket name
   -alertmanager-storage.gcs.service-account string
-    	JSON representing either a Google Developers Console client_credentials.json file or a Google Developers service account key file. If empty, fallback to Google default logic.
+    	JSON either from a Google Developers Console client_credentials.json file, or a Google Developers service account key. Needs to be valid JSON, not a filesystem path. If empty, fallback to Google default logic: 
+    	1. A JSON file whose path is specified by the GOOGLE_APPLICATION_CREDENTIALS environment variable. For workload identity federation, refer to https://cloud.google.com/iam/docs/how-to#using-workload-identity-federation on how to generate the JSON configuration file for on-prem/non-Google cloud platforms.
+    	2. A JSON file in a location known to the gcloud command-line tool: $HOME/.config/gcloud/application_default_credentials.json.
+    	3. On Google Compute Engine it fetches credentials from the metadata server.
   -alertmanager-storage.local.path string
     	Path at which alertmanager configurations are stored.
   -alertmanager-storage.s3.access-key-id string
@@ -232,7 +235,7 @@ Usage of ./cmd/mimir/mimir:
   -alertmanager.storage.path string
     	Directory to store Alertmanager state and temporarily configuration files. The content of this directory is not required to be persisted between restarts unless Alertmanager replication has been disabled. (default "./data-alertmanager/")
   -alertmanager.storage.retention duration
-    	How long to keep data for. (default 120h0m0s)
+    	How long should we store stateful data (notification logs and silences). For notification log entries, refers to how long should we keep entries before they expire and are deleted. For silences, refers to how long should tenants view silences after they expire and are deleted. (default 120h0m0s)
   -alertmanager.web.external-url value
     	The URL under which Alertmanager is externally reachable (eg. could be different than -http.alertmanager-http-prefix in case Alertmanager is served via a reverse proxy). This setting is used both to configure the internal requests router and to generate links in alert templates. If the external URL has a path portion, it will be used to prefix all HTTP endpoints served by Alertmanager, both the UI and API. (default http://localhost:8080/alertmanager)
   -api.skip-label-name-validation-header-enabled
@@ -272,7 +275,7 @@ Usage of ./cmd/mimir/mimir:
   -blocks-storage.bucket-store.chunk-pool-min-bucket-size-bytes int
     	Size - in bytes - of the smallest chunks pool bucket. (default 16000)
   -blocks-storage.bucket-store.chunks-cache.attributes-in-memory-max-items int
-    	Maximum number of object attribute items to keep in a first level in-memory LRU cache. Metadata will be stored and fetched in-memory before hitting the cache backend. 0 to disable the in-memory cache.
+    	Maximum number of object attribute items to keep in a first level in-memory LRU cache. Metadata will be stored and fetched in-memory before hitting the cache backend. 0 to disable the in-memory cache. (default 50000)
   -blocks-storage.bucket-store.chunks-cache.attributes-ttl duration
     	TTL for caching object attributes for chunks. If the metadata cache is configured, attributes will be stored under this cache backend, otherwise attributes are stored in the chunks cache backend. (default 168h0m0s)
   -blocks-storage.bucket-store.chunks-cache.backend string
@@ -302,7 +305,7 @@ Usage of ./cmd/mimir/mimir:
   -blocks-storage.bucket-store.consistency-delay duration
     	Minimum age of a block before it's being read. Set it to safe value (e.g 30m) if your object storage is eventually consistent. GCS and S3 are (roughly) strongly consistent.
   -blocks-storage.bucket-store.ignore-blocks-within duration
-    	Blocks with minimum time within this duration are ignored, and not loaded by store-gateway. Useful when used together with -querier.query-store-after to prevent loading young blocks, because there are usually many of them (depending on number of ingesters) and they are not yet compacted. Negative values or 0 disable the filter.
+    	Blocks with minimum time within this duration are ignored, and not loaded by store-gateway. Useful when used together with -querier.query-store-after to prevent loading young blocks, because there are usually many of them (depending on number of ingesters) and they are not yet compacted. Negative values or 0 disable the filter. (default 10h0m0s)
   -blocks-storage.bucket-store.ignore-deletion-marks-delay duration
     	Duration after which the blocks marked for deletion will be filtered out while fetching blocks. The idea of ignore-deletion-marks-delay is to ignore blocks that are marked for deletion with some delay. This ensures store can still serve blocks that are meant to be deleted but do not have a replacement yet. (default 1h0m0s)
   -blocks-storage.bucket-store.index-cache.backend string
@@ -392,7 +395,10 @@ Usage of ./cmd/mimir/mimir:
   -blocks-storage.gcs.bucket-name string
     	GCS bucket name
   -blocks-storage.gcs.service-account string
-    	JSON representing either a Google Developers Console client_credentials.json file or a Google Developers service account key file. If empty, fallback to Google default logic.
+    	JSON either from a Google Developers Console client_credentials.json file, or a Google Developers service account key. Needs to be valid JSON, not a filesystem path. If empty, fallback to Google default logic: 
+    	1. A JSON file whose path is specified by the GOOGLE_APPLICATION_CREDENTIALS environment variable. For workload identity federation, refer to https://cloud.google.com/iam/docs/how-to#using-workload-identity-federation on how to generate the JSON configuration file for on-prem/non-Google cloud platforms.
+    	2. A JSON file in a location known to the gcloud command-line tool: $HOME/.config/gcloud/application_default_credentials.json.
+    	3. On Google Compute Engine it fetches credentials from the metadata server.
   -blocks-storage.s3.access-key-id string
     	S3 access key ID
   -blocks-storage.s3.bucket-name string
@@ -478,7 +484,7 @@ Usage of ./cmd/mimir/mimir:
   -blocks-storage.tsdb.head-chunks-write-buffer-size-bytes int
     	The write buffer size used by the head chunks mapper. Lower values reduce memory utilisation on clusters with a large number of tenants at the cost of increased disk I/O operations. (default 4194304)
   -blocks-storage.tsdb.head-chunks-write-queue-size int
-    	[experimental] The size of the write queue used by the head chunks mapper. Lower values reduce memory utilisation at the cost of potentially higher ingest latency. Value of 0 switches chunks mapper to implementation without a queue.
+    	[experimental] The size of the write queue used by the head chunks mapper. Lower values reduce memory utilisation at the cost of potentially higher ingest latency. Value of 0 switches chunks mapper to implementation without a queue. This flag is only used if the new chunk disk mapper is enabled with -blocks-storage.tsdb.new-chunk-disk-mapper.
   -blocks-storage.tsdb.head-compaction-concurrency int
     	Maximum number of tenants concurrently compacting TSDB head into a new block (default 5)
   -blocks-storage.tsdb.head-compaction-idle-timeout duration
@@ -486,13 +492,15 @@ Usage of ./cmd/mimir/mimir:
   -blocks-storage.tsdb.head-compaction-interval duration
     	How frequently ingesters try to compact TSDB head. Block is only created if data covers smallest block range. Must be greater than 0 and max 5 minutes. (default 1m0s)
   -blocks-storage.tsdb.isolation-enabled
-    	Enables TSDB isolation feature. Disabling may improve performance. (default true)
+    	[Deprecated] Enables TSDB isolation feature. Disabling may improve performance.
   -blocks-storage.tsdb.max-tsdb-opening-concurrency-on-startup int
     	limit the number of concurrently opening TSDB's on startup (default 10)
   -blocks-storage.tsdb.memory-snapshot-on-shutdown
     	[experimental] True to enable snapshotting of in-memory TSDB data on disk when shutting down.
+  -blocks-storage.tsdb.new-chunk-disk-mapper
+    	[experimental] Temporary flag to select whether to use the new (used in upstream Prometheus) or the old (legacy) chunk disk mapper.
   -blocks-storage.tsdb.retention-period duration
-    	TSDB blocks retention in the ingester before a block is removed. This should be larger than the -blocks-storage.tsdb.block-ranges-period, -querier.query-store-after and large enough to give store-gateways and queriers enough time to discover newly uploaded blocks. (default 24h0m0s)
+    	TSDB blocks retention in the ingester before a block is removed, relative to the newest block written for the tenant. This should be larger than the -blocks-storage.tsdb.block-ranges-period, -querier.query-store-after and large enough to give store-gateways and queriers enough time to discover newly uploaded blocks. (default 24h0m0s)
   -blocks-storage.tsdb.series-hash-cache-max-size-bytes uint
     	Max size - in bytes - of the in-memory series hash cache. The cache is shared across all tenants and it's used only when query sharding is enabled. (default 1073741824)
   -blocks-storage.tsdb.ship-concurrency int
@@ -627,8 +635,8 @@ Usage of ./cmd/mimir/mimir:
     	How frequently to clean up clients for ingesters that have gone away. (default 15s)
   -distributor.drop-label value
     	This flag can be used to specify label names that to drop during sample ingestion within the distributor and can be repeated in order to drop multiple labels.
-  -distributor.extend-writes
-    	Try writing to an additional ingester in the presence of an ingester not in the ACTIVE state. It is useful to disable this along with -ingester.ring.unregister-on-shutdown=false in order to not spread samples to extra ingesters during rolling restarts with consistent naming. (default true)
+  -distributor.extend-writes value
+    	Deprecated: this setting was used to try writing to an additional ingester in the presence of an ingester not in the ACTIVE state. Mimir now behaves as this setting is always disabled.
   -distributor.forwarding.enabled
     	[experimental] Enables the feature to forward certain metrics in remote_write requests, depending on defined rules.
   -distributor.forwarding.request-timeout duration
@@ -924,7 +932,7 @@ Usage of ./cmd/mimir/mimir:
   -ingester.ring.tokens-file-path string
     	File path where tokens are stored. If empty, tokens are not stored at shutdown and restored at startup.
   -ingester.ring.unregister-on-shutdown
-    	Unregister from the ring upon clean shutdown. It can be useful to disable for rolling restarts with consistent naming in conjunction with -distributor.extend-writes=false. (default true)
+    	Unregister from the ring upon clean shutdown. It can be useful to disable for rolling restarts with consistent naming. (default true)
   -ingester.ring.zone-awareness-enabled
     	True to enable the zone-awareness and replicate ingested samples across different availability zones. This option needs be set on ingesters, distributors, queriers and rulers when running in microservices mode.
   -ingester.stream-chunks-when-using-blocks
@@ -1074,11 +1082,11 @@ Usage of ./cmd/mimir/mimir:
   -querier.query-ingesters-within duration
     	Maximum lookback beyond which queries are not sent to ingester. 0 means all queries are sent to ingester. (default 13h0m0s)
   -querier.query-store-after duration
-    	The time after which a metric should be queried from storage and not just ingesters. 0 means all queries are sent to store. If this option is enabled, the time range of the query sent to the store-gateway will be manipulated to ensure the query end is not more recent than 'now - query-store-after'.
+    	The time after which a metric should be queried from storage and not just ingesters. 0 means all queries are sent to store. If this option is enabled, the time range of the query sent to the store-gateway will be manipulated to ensure the query end is not more recent than 'now - query-store-after'. (default 12h0m0s)
   -querier.scheduler-address string
     	Address of the query-scheduler component, in host:port format. Only one of -querier.frontend-address or -querier.scheduler-address can be set. If neither is set, queries are only received via HTTP endpoint.
   -querier.shuffle-sharding-ingesters-lookback-period duration
-    	When distributor's sharding strategy is shuffle-sharding and this setting is > 0, queriers fetch in-memory series from the minimum set of required ingesters, selecting only ingesters which may have received series since 'now - lookback period'. The lookback period should be greater or equal than the configured -querier.query-store-after and -querier.query-ingesters-within. If this setting is 0, queriers always query all ingesters (ingesters shuffle sharding on read path is disabled).
+    	When this setting is > 0, queriers fetch in-memory series from the minimum set of required ingesters, selecting only ingesters which may have received series since 'now - lookback period'. The lookback period should be greater or equal than the configured -querier.query-store-after and -querier.query-ingesters-within. If this setting is 0, queriers always query all ingesters (ingesters shuffle sharding on read path is disabled). (default 13h0m0s)
   -querier.store-gateway-client.tls-ca-path string
     	Path to the CA certificates file to validate server certificate against. If not set, the host's root CA certificates are used.
   -querier.store-gateway-client.tls-cert-path string
@@ -1240,7 +1248,10 @@ Usage of ./cmd/mimir/mimir:
   -ruler-storage.gcs.bucket-name string
     	GCS bucket name
   -ruler-storage.gcs.service-account string
-    	JSON representing either a Google Developers Console client_credentials.json file or a Google Developers service account key file. If empty, fallback to Google default logic.
+    	JSON either from a Google Developers Console client_credentials.json file, or a Google Developers service account key. Needs to be valid JSON, not a filesystem path. If empty, fallback to Google default logic: 
+    	1. A JSON file whose path is specified by the GOOGLE_APPLICATION_CREDENTIALS environment variable. For workload identity federation, refer to https://cloud.google.com/iam/docs/how-to#using-workload-identity-federation on how to generate the JSON configuration file for on-prem/non-Google cloud platforms.
+    	2. A JSON file in a location known to the gcloud command-line tool: $HOME/.config/gcloud/application_default_credentials.json.
+    	3. On Google Compute Engine it fetches credentials from the metadata server.
   -ruler-storage.local.directory string
     	Directory to scan for rules
   -ruler-storage.s3.access-key-id string
@@ -1391,6 +1402,38 @@ Usage of ./cmd/mimir/mimir:
     	HTTP timeout duration when sending notifications to the Alertmanager. (default 10s)
   -ruler.poll-interval duration
     	How frequently to poll for rule changes (default 1m0s)
+  -ruler.query-frontend.address string
+    	GRPC listen address of the query-frontend(s). Must be a DNS address (prefixed with dns:///) to enable client side load balancing.
+  -ruler.query-frontend.grpc-client-config.backoff-max-period duration
+    	Maximum delay when backing off. (default 10s)
+  -ruler.query-frontend.grpc-client-config.backoff-min-period duration
+    	Minimum delay when backing off. (default 100ms)
+  -ruler.query-frontend.grpc-client-config.backoff-on-ratelimits
+    	Enable backoff and retry when we hit ratelimits.
+  -ruler.query-frontend.grpc-client-config.backoff-retries int
+    	Number of times to backoff and retry before failing. (default 10)
+  -ruler.query-frontend.grpc-client-config.grpc-client-rate-limit float
+    	Rate limit for gRPC client; 0 means disabled.
+  -ruler.query-frontend.grpc-client-config.grpc-client-rate-limit-burst int
+    	Rate limit burst for gRPC client.
+  -ruler.query-frontend.grpc-client-config.grpc-compression string
+    	Use compression when sending messages. Supported values are: 'gzip', 'snappy' and '' (disable compression)
+  -ruler.query-frontend.grpc-client-config.grpc-max-recv-msg-size int
+    	gRPC client max receive message size (bytes). (default 104857600)
+  -ruler.query-frontend.grpc-client-config.grpc-max-send-msg-size int
+    	gRPC client max send message size (bytes). (default 104857600)
+  -ruler.query-frontend.grpc-client-config.tls-ca-path string
+    	Path to the CA certificates file to validate server certificate against. If not set, the host's root CA certificates are used.
+  -ruler.query-frontend.grpc-client-config.tls-cert-path string
+    	Path to the client certificate file, which will be used for authenticating with the server. Also requires the key path to be configured.
+  -ruler.query-frontend.grpc-client-config.tls-enabled
+    	Enable TLS in the GRPC client. This flag needs to be enabled when any other TLS flag is set. If set to false, insecure connection to gRPC server will be used.
+  -ruler.query-frontend.grpc-client-config.tls-insecure-skip-verify
+    	Skip validating server certificate.
+  -ruler.query-frontend.grpc-client-config.tls-key-path string
+    	Path to the key file for the client certificate. Also requires the client certificate to be configured.
+  -ruler.query-frontend.grpc-client-config.tls-server-name string
+    	Override the expected name on the server certificate.
   -ruler.query-stats-enabled
     	Report the wall time for ruler queries to complete as a per-tenant metric and as an info level log message.
   -ruler.resend-delay duration
@@ -1480,9 +1523,9 @@ Usage of ./cmd/mimir/mimir:
   -server.grpc-max-concurrent-streams uint
     	Limit on the number of concurrent streams for gRPC calls (0 = unlimited) (default 100)
   -server.grpc-max-recv-msg-size-bytes int
-    	Limit on the size of a gRPC message this server can receive (bytes). (default 4194304)
+    	Limit on the size of a gRPC message this server can receive (bytes). (default 104857600)
   -server.grpc-max-send-msg-size-bytes int
-    	Limit on the size of a gRPC message this server can send (bytes). (default 4194304)
+    	Limit on the size of a gRPC message this server can send (bytes). (default 104857600)
   -server.grpc-tls-ca-path string
     	GRPC TLS Client CA path.
   -server.grpc-tls-cert-path string
@@ -1611,6 +1654,8 @@ Usage of ./cmd/mimir/mimir:
     	True to enable zone-awareness and replicate blocks across different availability zones. This option needs be set both on the store-gateway, querier and ruler when running in microservices mode.
   -store-gateway.tenant-shard-size int
     	The tenant's shard size, used when store-gateway sharding is enabled. Value of 0 disables shuffle sharding for the tenant, that is all tenant blocks are sharded across all store-gateway replicas.
+  -store-gateway.thread-pool-size uint
+    	[experimental] Number of OS threads that are dedicated for handling requests. Set to 0 to disable use of dedicated OS threads for handling requests.
   -store.max-labels-query-length value
     	Limit the time range (end - start time) of series, label names and values queries. This limit is enforced in the querier. If the requested time range is outside the allowed range, the request will not fail but will be manipulated to only query data within the allowed time range. 0 to disable.
   -store.max-query-length value

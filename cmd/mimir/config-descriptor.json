@@ -337,7 +337,7 @@
           "required": false,
           "desc": "Limit on the size of a gRPC message this server can receive (bytes).",
           "fieldValue": null,
-          "fieldDefaultValue": 4194304,
+          "fieldDefaultValue": 104857600,
           "fieldFlag": "server.grpc-max-recv-msg-size-bytes",
           "fieldType": "int",
           "fieldCategory": "advanced"
@@ -348,7 +348,7 @@
           "required": false,
           "desc": "Limit on the size of a gRPC message this server can send (bytes).",
           "fieldValue": null,
-          "fieldDefaultValue": 4194304,
+          "fieldDefaultValue": 104857600,
           "fieldFlag": "server.grpc-max-send-msg-size-bytes",
           "fieldType": "int",
           "fieldCategory": "advanced"
@@ -911,17 +911,6 @@
           "fieldCategory": "advanced"
         },
         {
-          "kind": "field",
-          "name": "extend_writes",
-          "required": false,
-          "desc": "Try writing to an additional ingester in the presence of an ingester not in the ACTIVE state. It is useful to disable this along with -ingester.ring.unregister-on-shutdown=false in order to not spread samples to extra ingesters during rolling restarts with consistent naming.",
-          "fieldValue": null,
-          "fieldDefaultValue": true,
-          "fieldFlag": "distributor.extend-writes",
-          "fieldType": "boolean",
-          "fieldCategory": "advanced"
-        },
-        {
           "kind": "block",
           "name": "ring",
           "required": false,
@@ -1388,7 +1377,8 @@
           "fieldValue": null,
           "fieldDefaultValue": 46800000000000,
           "fieldFlag": "querier.query-ingesters-within",
-          "fieldType": "duration"
+          "fieldType": "duration",
+          "fieldCategory": "advanced"
         },
         {
           "kind": "field",
@@ -1396,9 +1386,10 @@
           "required": false,
           "desc": "The time after which a metric should be queried from storage and not just ingesters. 0 means all queries are sent to store. If this option is enabled, the time range of the query sent to the store-gateway will be manipulated to ensure the query end is not more recent than 'now - query-store-after'.",
           "fieldValue": null,
-          "fieldDefaultValue": 0,
+          "fieldDefaultValue": 43200000000000,
           "fieldFlag": "querier.query-store-after",
-          "fieldType": "duration"
+          "fieldType": "duration",
+          "fieldCategory": "advanced"
         },
         {
           "kind": "field",
@@ -1491,9 +1482,9 @@
           "kind": "field",
           "name": "shuffle_sharding_ingesters_lookback_period",
           "required": false,
-          "desc": "When distributor's sharding strategy is shuffle-sharding and this setting is \u003e 0, queriers fetch in-memory series from the minimum set of required ingesters, selecting only ingesters which may have received series since 'now - lookback period'. The lookback period should be greater or equal than the configured -querier.query-store-after and -querier.query-ingesters-within. If this setting is 0, queriers always query all ingesters (ingesters shuffle sharding on read path is disabled).",
+          "desc": "When this setting is \u003e 0, queriers fetch in-memory series from the minimum set of required ingesters, selecting only ingesters which may have received series since 'now - lookback period'. The lookback period should be greater or equal than the configured -querier.query-store-after and -querier.query-ingesters-within. If this setting is 0, queriers always query all ingesters (ingesters shuffle sharding on read path is disabled).",
           "fieldValue": null,
-          "fieldDefaultValue": 0,
+          "fieldDefaultValue": 46800000000000,
           "fieldFlag": "querier.shuffle-sharding-ingesters-lookback-period",
           "fieldType": "duration",
           "fieldCategory": "advanced"
@@ -2182,7 +2173,7 @@
               "kind": "field",
               "name": "unregister_on_shutdown",
               "required": false,
-              "desc": "Unregister from the ring upon clean shutdown. It can be useful to disable for rolling restarts with consistent naming in conjunction with -distributor.extend-writes=false.",
+              "desc": "Unregister from the ring upon clean shutdown. It can be useful to disable for rolling restarts with consistent naming.",
               "fieldValue": null,
               "fieldDefaultValue": true,
               "fieldFlag": "ingester.ring.unregister-on-shutdown",
@@ -2307,10 +2298,9 @@
           "kind": "field",
           "name": "active_series_custom_trackers",
           "required": false,
-          "desc": "Additional custom trackers for active metrics. If there are active series matching a provided matcher (map value), the count will be exposed in the custom trackers metric labeled using the tracker name (map key). Zero valued counts are not exposed (and removed when they go back to zero).",
+          "desc": "[Deprecated] This config has been moved to the limits config, please set it there. Additional custom trackers for active metrics. If there are active series matching a provided matcher (map value), the count will be exposed in the custom trackers metric labeled using the tracker name (map key). Zero valued counts are not exposed (and removed when they go back to zero).",
           "fieldValue": null,
           "fieldDefaultValue": {},
-          "fieldFlag": "ingester.active-series-custom-trackers",
           "fieldType": "map of tracker name (string) to matcher (string)",
           "fieldCategory": "advanced"
         },
@@ -2624,6 +2614,17 @@
           "fieldFlag": "ingester.max-global-exemplars-per-user",
           "fieldType": "int",
           "fieldCategory": "experimental"
+        },
+        {
+          "kind": "field",
+          "name": "active_series_custom_trackers_config",
+          "required": false,
+          "desc": "Additional custom trackers for active metrics. If there are active series matching a provided matcher (map value), the count will be exposed in the custom trackers metric labeled using the tracker name (map key). Zero valued counts are not exposed (and removed when they go back to zero).",
+          "fieldValue": null,
+          "fieldDefaultValue": {},
+          "fieldFlag": "ingester.active-series-custom-trackers",
+          "fieldType": "map of tracker name (string) to matcher (string)",
+          "fieldCategory": "advanced"
         },
         {
           "kind": "field",
@@ -4003,7 +4004,7 @@
               "kind": "field",
               "name": "service_account",
               "required": false,
-              "desc": "JSON representing either a Google Developers Console client_credentials.json file or a Google Developers service account key file. If empty, fallback to Google default logic.",
+              "desc": "JSON either from a Google Developers Console client_credentials.json file, or a Google Developers service account key. Needs to be valid JSON, not a filesystem path. If empty, fallback to Google default logic: \n1. A JSON file whose path is specified by the GOOGLE_APPLICATION_CREDENTIALS environment variable. For workload identity federation, refer to https://cloud.google.com/iam/docs/how-to#using-workload-identity-federation on how to generate the JSON configuration file for on-prem/non-Google cloud platforms.\n2. A JSON file in a location known to the gcloud command-line tool: $HOME/.config/gcloud/application_default_credentials.json.\n3. On Google Compute Engine it fetches credentials from the metadata server.",
               "fieldValue": null,
               "fieldDefaultValue": "",
               "fieldFlag": "blocks-storage.gcs.service-account",
@@ -4678,7 +4679,7 @@
                   "required": false,
                   "desc": "Maximum number of object attribute items to keep in a first level in-memory LRU cache. Metadata will be stored and fetched in-memory before hitting the cache backend. 0 to disable the in-memory cache.",
                   "fieldValue": null,
-                  "fieldDefaultValue": 0,
+                  "fieldDefaultValue": 50000,
                   "fieldFlag": "blocks-storage.bucket-store.chunks-cache.attributes-in-memory-max-items",
                   "fieldType": "int",
                   "fieldCategory": "advanced"
@@ -5005,7 +5006,7 @@
               "required": false,
               "desc": "Blocks with minimum time within this duration are ignored, and not loaded by store-gateway. Useful when used together with -querier.query-store-after to prevent loading young blocks, because there are usually many of them (depending on number of ingesters) and they are not yet compacted. Negative values or 0 disable the filter.",
               "fieldValue": null,
-              "fieldDefaultValue": 0,
+              "fieldDefaultValue": 36000000000000,
               "fieldFlag": "blocks-storage.bucket-store.ignore-blocks-within",
               "fieldType": "duration",
               "fieldCategory": "advanced"
@@ -5133,7 +5134,7 @@
               "kind": "field",
               "name": "retention_period",
               "required": false,
-              "desc": "TSDB blocks retention in the ingester before a block is removed. This should be larger than the -blocks-storage.tsdb.block-ranges-period, -querier.query-store-after and large enough to give store-gateways and queriers enough time to discover newly uploaded blocks.",
+              "desc": "TSDB blocks retention in the ingester before a block is removed, relative to the newest block written for the tenant. This should be larger than the -blocks-storage.tsdb.block-ranges-period, -querier.query-store-after and large enough to give store-gateways and queriers enough time to discover newly uploaded blocks.",
               "fieldValue": null,
               "fieldDefaultValue": 86400000000000,
               "fieldFlag": "blocks-storage.tsdb.retention-period",
@@ -5286,7 +5287,7 @@
               "kind": "field",
               "name": "head_chunks_write_queue_size",
               "required": false,
-              "desc": "The size of the write queue used by the head chunks mapper. Lower values reduce memory utilisation at the cost of potentially higher ingest latency. Value of 0 switches chunks mapper to implementation without a queue.",
+              "desc": "The size of the write queue used by the head chunks mapper. Lower values reduce memory utilisation at the cost of potentially higher ingest latency. Value of 0 switches chunks mapper to implementation without a queue. This flag is only used if the new chunk disk mapper is enabled with -blocks-storage.tsdb.new-chunk-disk-mapper.",
               "fieldValue": null,
               "fieldDefaultValue": 0,
               "fieldFlag": "blocks-storage.tsdb.head-chunks-write-queue-size",
@@ -5295,11 +5296,22 @@
             },
             {
               "kind": "field",
+              "name": "new_chunk_disk_mapper",
+              "required": false,
+              "desc": "Temporary flag to select whether to use the new (used in upstream Prometheus) or the old (legacy) chunk disk mapper.",
+              "fieldValue": null,
+              "fieldDefaultValue": false,
+              "fieldFlag": "blocks-storage.tsdb.new-chunk-disk-mapper",
+              "fieldType": "boolean",
+              "fieldCategory": "experimental"
+            },
+            {
+              "kind": "field",
               "name": "isolation_enabled",
               "required": false,
-              "desc": "Enables TSDB isolation feature. Disabling may improve performance.",
+              "desc": "[Deprecated] Enables TSDB isolation feature. Disabling may improve performance.",
               "fieldValue": null,
-              "fieldDefaultValue": true,
+              "fieldDefaultValue": false,
               "fieldFlag": "blocks-storage.tsdb.isolation-enabled",
               "fieldType": "boolean",
               "fieldCategory": "advanced"
@@ -6389,6 +6401,17 @@
           ],
           "fieldValue": null,
           "fieldDefaultValue": null
+        },
+        {
+          "kind": "field",
+          "name": "thread_pool_size",
+          "required": false,
+          "desc": "Number of OS threads that are dedicated for handling requests. Set to 0 to disable use of dedicated OS threads for handling requests.",
+          "fieldValue": null,
+          "fieldDefaultValue": 0,
+          "fieldFlag": "store-gateway.thread-pool-size",
+          "fieldType": "int",
+          "fieldCategory": "experimental"
         }
       ],
       "fieldValue": null,
@@ -7280,6 +7303,211 @@
         },
         {
           "kind": "block",
+          "name": "query_frontend",
+          "required": false,
+          "desc": "",
+          "blockEntries": [
+            {
+              "kind": "field",
+              "name": "address",
+              "required": false,
+              "desc": "GRPC listen address of the query-frontend(s). Must be a DNS address (prefixed with dns:///) to enable client side load balancing.",
+              "fieldValue": null,
+              "fieldDefaultValue": "",
+              "fieldFlag": "ruler.query-frontend.address",
+              "fieldType": "string"
+            },
+            {
+              "kind": "block",
+              "name": "grpc_client_config",
+              "required": false,
+              "desc": "",
+              "blockEntries": [
+                {
+                  "kind": "field",
+                  "name": "max_recv_msg_size",
+                  "required": false,
+                  "desc": "gRPC client max receive message size (bytes).",
+                  "fieldValue": null,
+                  "fieldDefaultValue": 104857600,
+                  "fieldFlag": "ruler.query-frontend.grpc-client-config.grpc-max-recv-msg-size",
+                  "fieldType": "int",
+                  "fieldCategory": "advanced"
+                },
+                {
+                  "kind": "field",
+                  "name": "max_send_msg_size",
+                  "required": false,
+                  "desc": "gRPC client max send message size (bytes).",
+                  "fieldValue": null,
+                  "fieldDefaultValue": 104857600,
+                  "fieldFlag": "ruler.query-frontend.grpc-client-config.grpc-max-send-msg-size",
+                  "fieldType": "int",
+                  "fieldCategory": "advanced"
+                },
+                {
+                  "kind": "field",
+                  "name": "grpc_compression",
+                  "required": false,
+                  "desc": "Use compression when sending messages. Supported values are: 'gzip', 'snappy' and '' (disable compression)",
+                  "fieldValue": null,
+                  "fieldDefaultValue": "",
+                  "fieldFlag": "ruler.query-frontend.grpc-client-config.grpc-compression",
+                  "fieldType": "string",
+                  "fieldCategory": "advanced"
+                },
+                {
+                  "kind": "field",
+                  "name": "rate_limit",
+                  "required": false,
+                  "desc": "Rate limit for gRPC client; 0 means disabled.",
+                  "fieldValue": null,
+                  "fieldDefaultValue": 0,
+                  "fieldFlag": "ruler.query-frontend.grpc-client-config.grpc-client-rate-limit",
+                  "fieldType": "float",
+                  "fieldCategory": "advanced"
+                },
+                {
+                  "kind": "field",
+                  "name": "rate_limit_burst",
+                  "required": false,
+                  "desc": "Rate limit burst for gRPC client.",
+                  "fieldValue": null,
+                  "fieldDefaultValue": 0,
+                  "fieldFlag": "ruler.query-frontend.grpc-client-config.grpc-client-rate-limit-burst",
+                  "fieldType": "int",
+                  "fieldCategory": "advanced"
+                },
+                {
+                  "kind": "field",
+                  "name": "backoff_on_ratelimits",
+                  "required": false,
+                  "desc": "Enable backoff and retry when we hit ratelimits.",
+                  "fieldValue": null,
+                  "fieldDefaultValue": false,
+                  "fieldFlag": "ruler.query-frontend.grpc-client-config.backoff-on-ratelimits",
+                  "fieldType": "boolean",
+                  "fieldCategory": "advanced"
+                },
+                {
+                  "kind": "block",
+                  "name": "backoff_config",
+                  "required": false,
+                  "desc": "",
+                  "blockEntries": [
+                    {
+                      "kind": "field",
+                      "name": "min_period",
+                      "required": false,
+                      "desc": "Minimum delay when backing off.",
+                      "fieldValue": null,
+                      "fieldDefaultValue": 100000000,
+                      "fieldFlag": "ruler.query-frontend.grpc-client-config.backoff-min-period",
+                      "fieldType": "duration",
+                      "fieldCategory": "advanced"
+                    },
+                    {
+                      "kind": "field",
+                      "name": "max_period",
+                      "required": false,
+                      "desc": "Maximum delay when backing off.",
+                      "fieldValue": null,
+                      "fieldDefaultValue": 10000000000,
+                      "fieldFlag": "ruler.query-frontend.grpc-client-config.backoff-max-period",
+                      "fieldType": "duration",
+                      "fieldCategory": "advanced"
+                    },
+                    {
+                      "kind": "field",
+                      "name": "max_retries",
+                      "required": false,
+                      "desc": "Number of times to backoff and retry before failing.",
+                      "fieldValue": null,
+                      "fieldDefaultValue": 10,
+                      "fieldFlag": "ruler.query-frontend.grpc-client-config.backoff-retries",
+                      "fieldType": "int",
+                      "fieldCategory": "advanced"
+                    }
+                  ],
+                  "fieldValue": null,
+                  "fieldDefaultValue": null
+                },
+                {
+                  "kind": "field",
+                  "name": "tls_enabled",
+                  "required": false,
+                  "desc": "Enable TLS in the GRPC client. This flag needs to be enabled when any other TLS flag is set. If set to false, insecure connection to gRPC server will be used.",
+                  "fieldValue": null,
+                  "fieldDefaultValue": false,
+                  "fieldFlag": "ruler.query-frontend.grpc-client-config.tls-enabled",
+                  "fieldType": "boolean",
+                  "fieldCategory": "advanced"
+                },
+                {
+                  "kind": "field",
+                  "name": "tls_cert_path",
+                  "required": false,
+                  "desc": "Path to the client certificate file, which will be used for authenticating with the server. Also requires the key path to be configured.",
+                  "fieldValue": null,
+                  "fieldDefaultValue": "",
+                  "fieldFlag": "ruler.query-frontend.grpc-client-config.tls-cert-path",
+                  "fieldType": "string",
+                  "fieldCategory": "advanced"
+                },
+                {
+                  "kind": "field",
+                  "name": "tls_key_path",
+                  "required": false,
+                  "desc": "Path to the key file for the client certificate. Also requires the client certificate to be configured.",
+                  "fieldValue": null,
+                  "fieldDefaultValue": "",
+                  "fieldFlag": "ruler.query-frontend.grpc-client-config.tls-key-path",
+                  "fieldType": "string",
+                  "fieldCategory": "advanced"
+                },
+                {
+                  "kind": "field",
+                  "name": "tls_ca_path",
+                  "required": false,
+                  "desc": "Path to the CA certificates file to validate server certificate against. If not set, the host's root CA certificates are used.",
+                  "fieldValue": null,
+                  "fieldDefaultValue": "",
+                  "fieldFlag": "ruler.query-frontend.grpc-client-config.tls-ca-path",
+                  "fieldType": "string",
+                  "fieldCategory": "advanced"
+                },
+                {
+                  "kind": "field",
+                  "name": "tls_server_name",
+                  "required": false,
+                  "desc": "Override the expected name on the server certificate.",
+                  "fieldValue": null,
+                  "fieldDefaultValue": "",
+                  "fieldFlag": "ruler.query-frontend.grpc-client-config.tls-server-name",
+                  "fieldType": "string",
+                  "fieldCategory": "advanced"
+                },
+                {
+                  "kind": "field",
+                  "name": "tls_insecure_skip_verify",
+                  "required": false,
+                  "desc": "Skip validating server certificate.",
+                  "fieldValue": null,
+                  "fieldDefaultValue": false,
+                  "fieldFlag": "ruler.query-frontend.grpc-client-config.tls-insecure-skip-verify",
+                  "fieldType": "boolean",
+                  "fieldCategory": "advanced"
+                }
+              ],
+              "fieldValue": null,
+              "fieldDefaultValue": null
+            }
+          ],
+          "fieldValue": null,
+          "fieldDefaultValue": null
+        },
+        {
+          "kind": "block",
           "name": "tenant_federation",
           "required": false,
           "desc": "",
@@ -7558,7 +7786,7 @@
               "kind": "field",
               "name": "service_account",
               "required": false,
-              "desc": "JSON representing either a Google Developers Console client_credentials.json file or a Google Developers service account key file. If empty, fallback to Google default logic.",
+              "desc": "JSON either from a Google Developers Console client_credentials.json file, or a Google Developers service account key. Needs to be valid JSON, not a filesystem path. If empty, fallback to Google default logic: \n1. A JSON file whose path is specified by the GOOGLE_APPLICATION_CREDENTIALS environment variable. For workload identity federation, refer to https://cloud.google.com/iam/docs/how-to#using-workload-identity-federation on how to generate the JSON configuration file for on-prem/non-Google cloud platforms.\n2. A JSON file in a location known to the gcloud command-line tool: $HOME/.config/gcloud/application_default_credentials.json.\n3. On Google Compute Engine it fetches credentials from the metadata server.",
               "fieldValue": null,
               "fieldDefaultValue": "",
               "fieldFlag": "ruler-storage.gcs.service-account",
@@ -7908,7 +8136,7 @@
           "kind": "field",
           "name": "retention",
           "required": false,
-          "desc": "How long to keep data for.",
+          "desc": "How long should we store stateful data (notification logs and silences). For notification log entries, refers to how long should we keep entries before they expire and are deleted. For silences, refers to how long should tenants view silences after they expire and are deleted.",
           "fieldValue": null,
           "fieldDefaultValue": 432000000000000,
           "fieldFlag": "alertmanager.storage.retention",
@@ -8865,7 +9093,7 @@
               "kind": "field",
               "name": "service_account",
               "required": false,
-              "desc": "JSON representing either a Google Developers Console client_credentials.json file or a Google Developers service account key file. If empty, fallback to Google default logic.",
+              "desc": "JSON either from a Google Developers Console client_credentials.json file, or a Google Developers service account key. Needs to be valid JSON, not a filesystem path. If empty, fallback to Google default logic: \n1. A JSON file whose path is specified by the GOOGLE_APPLICATION_CREDENTIALS environment variable. For workload identity federation, refer to https://cloud.google.com/iam/docs/how-to#using-workload-identity-federation on how to generate the JSON configuration file for on-prem/non-Google cloud platforms.\n2. A JSON file in a location known to the gcloud command-line tool: $HOME/.config/gcloud/application_default_credentials.json.\n3. On Google Compute Engine it fetches credentials from the metadata server.",
               "fieldValue": null,
               "fieldDefaultValue": "",
               "fieldFlag": "alertmanager-storage.gcs.service-account",

@@ -18,7 +18,6 @@ import (
 	"net/http/pprof"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -31,6 +30,7 @@ import (
 	"github.com/grafana/dskit/ring"
 	"github.com/grafana/dskit/services"
 	"github.com/grafana/dskit/test"
+	"github.com/grafana/regexp"
 	"github.com/prometheus/alertmanager/cluster/clusterpb"
 	"github.com/prometheus/alertmanager/notify"
 	"github.com/prometheus/alertmanager/pkg/labels"
@@ -77,13 +77,7 @@ func mockAlertmanagerConfig(t *testing.T) *MultitenantAlertmanagerConfig {
 	err := externalURL.Set("http://localhost/alertmanager")
 	require.NoError(t, err)
 
-	tempDir, err := ioutil.TempDir(os.TempDir(), "alertmanager")
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		err := os.RemoveAll(tempDir)
-		require.NoError(t, err)
-	})
+	tempDir := t.TempDir()
 
 	cfg := &MultitenantAlertmanagerConfig{}
 	flagext.DefaultValues(cfg)
@@ -171,11 +165,11 @@ func TestMultitenantAlertmanagerConfig_Validate(t *testing.T) {
 			},
 			expected: nil,
 		},
-		"should fail if new storage store configuration given with local type": {
+		"should succeed if new storage store configuration given with local type": {
 			setup: func(t *testing.T, cfg *MultitenantAlertmanagerConfig, storageCfg *alertstore.Config) {
 				storageCfg.Backend = "local"
 			},
-			expected: errShardingUnsupportedStorage,
+			expected: nil,
 		},
 		"should fail if zone aware is enabled but zone is not set": {
 			setup: func(t *testing.T, cfg *MultitenantAlertmanagerConfig, storageCfg *alertstore.Config) {
@@ -461,6 +455,23 @@ receivers:
           region: us-east-1
           access_key: xxx
           secret_key: xxx
+`, backendURL)
+			},
+		},
+		"telegram": {
+			getAlertmanagerConfig: func(backendURL string) string {
+				return fmt.Sprintf(`
+route:
+  receiver: telegram
+  group_wait: 0s
+  group_interval: 1s
+
+receivers:
+  - name: telegram
+    telegram_configs:
+      - api_url: %s
+        bot_token: xxx
+        chat_id: 111
 `, backendURL)
 			},
 		},
@@ -1958,6 +1969,37 @@ func TestSafeTemplateFilepath(t *testing.T) {
 			template:    "../test.tmpl",
 			expectedErr: errors.New(`invalid template name "../test.tmpl": the template filepath is escaping the per-tenant local directory`),
 		},
+		"template name starting with /": {
+			dir:          "/tmp",
+			template:     "/file",
+			expectedErr:  nil,
+			expectedPath: "/tmp/file",
+		},
+		"escaping template name that has prefix of dir (tmp is prefix of tmpfile)": {
+			dir:         "/sub/tmp",
+			template:    "../tmpfile",
+			expectedErr: errors.New(`invalid template name "../tmpfile": the template filepath is escaping the per-tenant local directory`),
+		},
+		"empty template name": {
+			dir:         "/tmp",
+			template:    "",
+			expectedErr: errors.New(`invalid template name ""`),
+		},
+		"dot template name": {
+			dir:         "/tmp",
+			template:    ".",
+			expectedErr: errors.New(`invalid template name "."`),
+		},
+		"root dir": {
+			dir:          "/",
+			template:     "file",
+			expectedPath: "/file",
+		},
+		"root dir 2": {
+			dir:          "/",
+			template:     "/subdir/file",
+			expectedPath: "/subdir/file",
+		},
 	}
 
 	for testName, testData := range tests {
@@ -1970,13 +2012,7 @@ func TestSafeTemplateFilepath(t *testing.T) {
 }
 
 func TestStoreTemplateFile(t *testing.T) {
-	tempDir, err := ioutil.TempDir(os.TempDir(), "alertmanager")
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		require.NoError(t, os.RemoveAll(tempDir))
-	})
-
+	tempDir := t.TempDir()
 	testTemplateDir := filepath.Join(tempDir, templatesDir)
 
 	changed, err := storeTemplateFile(filepath.Join(testTemplateDir, "some-template"), "content")

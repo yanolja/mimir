@@ -23,6 +23,7 @@ import (
 	"github.com/prometheus/prometheus/model/timestamp"
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/promql/parser"
+	"github.com/thanos-io/thanos/pkg/extprom"
 	"github.com/uber/jaeger-client-go"
 
 	"github.com/grafana/mimir/pkg/cache"
@@ -31,6 +32,9 @@ import (
 )
 
 const (
+	// resultsCacheVersion should be increased every time cache should be invalidated (after a bugfix or cache format change).
+	resultsCacheVersion = 1
+
 	// cacheControlHeader is the name of the cache control header.
 	cacheControlHeader = "Cache-Control"
 
@@ -79,6 +83,10 @@ func errUnsupportedResultsCacheBackend(unsupportedBackend string) error {
 
 // newResultsCache creates a new results cache based on the input configuration.
 func newResultsCache(cfg ResultsCacheConfig, logger log.Logger, reg prometheus.Registerer) (cache.Cache, error) {
+	// Add the "component" label similarly to other components, so that metrics don't clash and have the same labels set
+	// when running in monolithic mode.
+	reg = extprom.WrapRegistererWith(prometheus.Labels{"component": "query-frontend"}, reg)
+
 	client, err := cache.CreateClient("frontend-cache", cfg.BackendConfig, logger, reg)
 	if err != nil {
 		return nil, err
@@ -86,7 +94,10 @@ func newResultsCache(cfg ResultsCacheConfig, logger log.Logger, reg prometheus.R
 		return nil, errUnsupportedResultsCacheBackend(cfg.Backend)
 	}
 
-	return cache.NewSpanlessTracingCache(client, logger), nil
+	return cache.NewVersioned(
+		cache.NewSpanlessTracingCache(client, logger),
+		resultsCacheVersion,
+	), nil
 }
 
 // Extractor is used by the cache to extract a subset of a response from a cache entry.

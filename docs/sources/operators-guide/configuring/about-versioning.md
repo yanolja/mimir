@@ -43,7 +43,9 @@ Experimental configuration and flags are subject to change.
 
 The following features are currently experimental:
 
-- Ruler: Tenant federation
+- Ruler
+  - Tenant federation
+  - Use query-frontend for rule evaluation
 - Distributor: Metrics relabeling
 - Purger: Tenant deletion API
 - Exemplar storage
@@ -74,11 +76,16 @@ The following features are currently experimental:
   - `-query-frontend.querier-forget-delay`
 - Query-scheduler
   - `-query-scheduler.querier-forget-delay`
+- Store-gateway
+  - `-blocks-storage.bucket-store.index-header-thread-pool-size`
 
 ## Deprecated features
 
 The following features are currently deprecated:
 
+- Ingester:
+  - `-blocks-storage.tsdb.isolation-enabled` CLI flag and `isolation_enabled` YAML config parameter. This will be removed in version 2.3.0.
+  - `active_series_custom_trackers` YAML config parameter in the ingester block. The configuration has been moved to limit config, the ingester config will be removed in version 2.3.0.
 - Ruler:
   - `/api/v1/rules/**` configuration endpoints. These will be removed in version 2.2.0. Use their `<prometheus-http-prefix>/config/v1/rules/**` equivalents instead.
   - `<prometheus-http-prefix>/rules/**` configuration endpoints. These will be removed in version 2.2.0. Use their `<prometheus-http-prefix>/config/v1/rules/**` equivalents instead.

@@ -1,8 +1,9 @@
 local utils = import 'mixin-utils/utils.libsonnet';
+local filename = 'mimir-overrides.json';
 
 (import 'dashboard-utils.libsonnet') {
-  'mimir-overrides.json':
-    ($.dashboard('Overrides') + { uid: 'b5c95fee2e5e7c4b5930826ff6e89a12' })
+  [filename]:
+    ($.dashboard('Overrides') + { uid: std.md5(filename) })
     .addClusterSelectorTemplates(false)
     .addRow(
       $.row('')
@@ -13,7 +14,7 @@ local utils = import 'mixin-utils/utils.libsonnet';
           datasource: '${datasource}',
           targets: [
             {
-              expr: 'max by(limit_name) (cortex_limits_defaults{cluster=~"$cluster",namespace=~"$namespace"})',
+              expr: 'max by(limit_name) (cortex_limits_defaults{%s=~"$cluster",namespace=~"$namespace"})' % $._config.per_cluster_label,
               instant: true,
               legendFormat: '',
               refId: 'A',
@@ -69,7 +70,7 @@ local utils = import 'mixin-utils/utils.libsonnet';
           datasource: '${datasource}',
           targets: [
             {
-              expr: 'max by(user, limit_name) (cortex_limits_overrides{cluster=~"$cluster",namespace=~"$namespace",user=~"${tenant_id}"})',
+              expr: 'max by(user, limit_name) (cortex_limits_overrides{%s=~"$cluster",namespace=~"$namespace",user=~"${tenant_id}"})' % $._config.per_cluster_label,
               instant: true,
               legendFormat: '',
               refId: 'A',

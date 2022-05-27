@@ -22,22 +22,22 @@
       // So that exporters like cloudwatch can still send in data and be un-cached.
       'query-frontend.max-cache-freshness': '10m',
 
-      // So it can receive big responses from the querier.
-      'server.grpc-max-recv-msg-size-bytes': 100 << 20,
-
       // Limit queries to 500 days, allow this to be override per-user.
       'store.max-query-length': '12000h',  // 500 Days
       'runtime-config.file': '%s/overrides.yaml' % $._config.overrides_configmap_mountpoint,
     },
 
-  query_frontend_container::
-    container.new('query-frontend', $._images.query_frontend) +
+  newQueryFrontendContainer(name, args)::
+    container.new(name, $._images.query_frontend) +
     container.withPorts($.util.defaultPorts) +
-    container.withArgsMixin($.util.mapToFlags($.query_frontend_args)) +
+    container.withArgsMixin($.util.mapToFlags(args)) +
     $.jaeger_mixin +
     $.util.readinessProbe +
     $.util.resourcesRequests('2', '600Mi') +
     $.util.resourcesLimits(null, '1200Mi'),
+
+  query_frontend_container::
+    self.newQueryFrontendContainer('query-frontend', $.query_frontend_args),
 
   local deployment = $.apps.v1.deployment,
 
@@ -45,6 +45,7 @@
     deployment.new(name, $._config.queryFrontend.replicas, [container]) +
     $.util.configVolumeMount($._config.overrides_configmap, $._config.overrides_configmap_mountpoint) +
     (if $._config.query_frontend_allow_multiple_replicas_on_same_node then {} else $.util.antiAffinity) +
+    (if !std.isObject($._config.node_selector) then {} else deployment.mixin.spec.template.spec.withNodeSelectorMixin($._config.node_selector)) +
     deployment.mixin.spec.strategy.rollingUpdate.withMaxSurge(1) +
     deployment.mixin.spec.strategy.rollingUpdate.withMaxUnavailable(1),
 

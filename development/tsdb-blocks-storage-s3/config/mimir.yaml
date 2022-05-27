@@ -3,6 +3,12 @@ multitenancy_enabled: false
 distributor:
   pool:
     health_check_ingesters: true
+  ring:
+    instance_addr: 127.0.0.1
+    kvstore:
+      store: consul
+      consul:
+        host: consul:8500
 
 ingester_client:
   grpc_client_config:
@@ -28,9 +34,7 @@ memberlist:
   join_members:
     - distributor:10001
   abort_if_cluster_join_fails: false
-
-querier:
-  query_ingesters_within: 3h
+  rejoin_interval: 10s
 
 blocks_storage:
   backend: s3
@@ -89,6 +93,7 @@ ruler_storage:
     insecure:          true
 
 alertmanager:
+  fallback_config_file: './config/alertmanager.yaml'
   sharding_ring:
     replication_factor: 3
     heartbeat_period: 5s

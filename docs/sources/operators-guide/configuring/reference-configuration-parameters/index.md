@@ -212,90 +212,8 @@ runtime_config:
 # The memberlist block configures the Gossip memberlist.
 [memberlist: <memberlist>]
 
-query_scheduler:
-  # Maximum number of outstanding requests per tenant per query-scheduler.
-  # In-flight requests above this limit will fail with HTTP response status code
-  # 429.
-  # CLI flag: -query-scheduler.max-outstanding-requests-per-tenant
-  [max_outstanding_requests_per_tenant: <int> | default = 100]
-
-  # (experimental) If a querier disconnects without sending notification about
-  # graceful shutdown, the query-scheduler will keep the querier in the tenant's
-  # shard until the forget delay has passed. This feature is useful to reduce
-  # the blast radius when shuffle-sharding is enabled.
-  # CLI flag: -query-scheduler.querier-forget-delay
-  [querier_forget_delay: <duration> | default = 0s]
-
-  # This configures the gRPC client used to report errors back to the
-  # query-frontend.
-  grpc_client_config:
-    # (advanced) gRPC client max receive message size (bytes).
-    # CLI flag: -query-scheduler.grpc-client-config.grpc-max-recv-msg-size
-    [max_recv_msg_size: <int> | default = 104857600]
-
-    # (advanced) gRPC client max send message size (bytes).
-    # CLI flag: -query-scheduler.grpc-client-config.grpc-max-send-msg-size
-    [max_send_msg_size: <int> | default = 104857600]
-
-    # (advanced) Use compression when sending messages. Supported values are:
-    # 'gzip', 'snappy' and '' (disable compression)
-    # CLI flag: -query-scheduler.grpc-client-config.grpc-compression
-    [grpc_compression: <string> | default = ""]
-
-    # (advanced) Rate limit for gRPC client; 0 means disabled.
-    # CLI flag: -query-scheduler.grpc-client-config.grpc-client-rate-limit
-    [rate_limit: <float> | default = 0]
-
-    # (advanced) Rate limit burst for gRPC client.
-    # CLI flag: -query-scheduler.grpc-client-config.grpc-client-rate-limit-burst
-    [rate_limit_burst: <int> | default = 0]
-
-    # (advanced) Enable backoff and retry when we hit ratelimits.
-    # CLI flag: -query-scheduler.grpc-client-config.backoff-on-ratelimits
-    [backoff_on_ratelimits: <boolean> | default = false]
-
-    backoff_config:
-      # (advanced) Minimum delay when backing off.
-      # CLI flag: -query-scheduler.grpc-client-config.backoff-min-period
-      [min_period: <duration> | default = 100ms]
-
-      # (advanced) Maximum delay when backing off.
-      # CLI flag: -query-scheduler.grpc-client-config.backoff-max-period
-      [max_period: <duration> | default = 10s]
-
-      # (advanced) Number of times to backoff and retry before failing.
-      # CLI flag: -query-scheduler.grpc-client-config.backoff-retries
-      [max_retries: <int> | default = 10]
-
-    # (advanced) Enable TLS in the GRPC client. This flag needs to be enabled
-    # when any other TLS flag is set. If set to false, insecure connection to
-    # gRPC server will be used.
-    # CLI flag: -query-scheduler.grpc-client-config.tls-enabled
-    [tls_enabled: <boolean> | default = false]
-
-    # (advanced) Path to the client certificate file, which will be used for
-    # authenticating with the server. Also requires the key path to be
-    # configured.
-    # CLI flag: -query-scheduler.grpc-client-config.tls-cert-path
-    [tls_cert_path: <string> | default = ""]
-
-    # (advanced) Path to the key file for the client certificate. Also requires
-    # the client certificate to be configured.
-    # CLI flag: -query-scheduler.grpc-client-config.tls-key-path
-    [tls_key_path: <string> | default = ""]
-
-    # (advanced) Path to the CA certificates file to validate server certificate
-    # against. If not set, the host's root CA certificates are used.
-    # CLI flag: -query-scheduler.grpc-client-config.tls-ca-path
-    [tls_ca_path: <string> | default = ""]
-
-    # (advanced) Override the expected name on the server certificate.
-    # CLI flag: -query-scheduler.grpc-client-config.tls-server-name
-    [tls_server_name: <string> | default = ""]
-
-    # (advanced) Skip validating server certificate.
-    # CLI flag: -query-scheduler.grpc-client-config.tls-insecure-skip-verify
-    [tls_insecure_skip_verify: <boolean> | default = false]
+# The query_scheduler block configures the query-scheduler.
+[query_scheduler: <query_scheduler>]
 ```
 
 ### server
@@ -392,11 +310,11 @@ grpc_tls_config:
 # (advanced) Limit on the size of a gRPC message this server can receive
 # (bytes).
 # CLI flag: -server.grpc-max-recv-msg-size-bytes
-[grpc_server_max_recv_msg_size: <int> | default = 4194304]
+[grpc_server_max_recv_msg_size: <int> | default = 104857600]
 
 # (advanced) Limit on the size of a gRPC message this server can send (bytes).
 # CLI flag: -server.grpc-max-send-msg-size-bytes
-[grpc_server_max_send_msg_size: <int> | default = 4194304]
+[grpc_server_max_send_msg_size: <int> | default = 104857600]
 
 # (advanced) Limit on the number of concurrent streams for gRPC calls (0 =
 # unlimited)
@@ -556,13 +474,6 @@ ha_tracker:
 # (advanced) Timeout for downstream ingesters.
 # CLI flag: -distributor.remote-timeout
 [remote_timeout: <duration> | default = 20s]
-
-# (advanced) Try writing to an additional ingester in the presence of an
-# ingester not in the ACTIVE state. It is useful to disable this along with
-# -ingester.ring.unregister-on-shutdown=false in order to not spread samples to
-# extra ingesters during rolling restarts with consistent naming.
-# CLI flag: -distributor.extend-writes
-[extend_writes: <boolean> | default = true]
 
 ring:
   kvstore:
@@ -759,8 +670,7 @@ ring:
   [instance_availability_zone: <string> | default = ""]
 
   # (advanced) Unregister from the ring upon clean shutdown. It can be useful to
-  # disable for rolling restarts with consistent naming in conjunction with
-  # -distributor.extend-writes=false.
+  # disable for rolling restarts with consistent naming.
   # CLI flag: -ingester.ring.unregister-on-shutdown
   [unregister_on_shutdown: <boolean> | default = true]
 
@@ -816,10 +726,12 @@ ring:
 # CLI flag: -ingester.active-series-metrics-idle-timeout
 [active_series_metrics_idle_timeout: <duration> | default = 10m]
 
-# (advanced) Additional custom trackers for active metrics. If there are active
-# series matching a provided matcher (map value), the count will be exposed in
-# the custom trackers metric labeled using the tracker name (map key). Zero
-# valued counts are not exposed (and removed when they go back to zero).
+# (advanced) [Deprecated] This config has been moved to the limits config,
+# please set it there. Additional custom trackers for active metrics. If there
+# are active series matching a provided matcher (map value), the count will be
+# exposed in the custom trackers metric labeled using the tracker name (map
+# key). Zero valued counts are not exposed (and removed when they go back to
+# zero).
 # Example:
 #   The following configuration will count the active series coming from dev and
 #   prod namespaces for each tenant and label them as {name="dev"} and
@@ -827,7 +739,6 @@ ring:
 #   active_series_custom_trackers:
 #       dev: '{namespace=~"dev-.*"}'
 #       prod: '{namespace=~"prod-.*"}'
-# CLI flag: -ingester.active-series-custom-trackers
 [active_series_custom_trackers: <map of tracker name (string) to matcher (string)> | default = ]
 
 # (experimental) Period with which to update per-tenant max exemplar limit.
@@ -880,17 +791,18 @@ The `querier` block configures the querier.
 # CLI flag: -querier.batch-iterators
 [batch_iterators: <boolean> | default = true]
 
-# Maximum lookback beyond which queries are not sent to ingester. 0 means all
-# queries are sent to ingester.
+# (advanced) Maximum lookback beyond which queries are not sent to ingester. 0
+# means all queries are sent to ingester.
 # CLI flag: -querier.query-ingesters-within
 [query_ingesters_within: <duration> | default = 13h]
 
-# The time after which a metric should be queried from storage and not just
-# ingesters. 0 means all queries are sent to store. If this option is enabled,
-# the time range of the query sent to the store-gateway will be manipulated to
-# ensure the query end is not more recent than 'now - query-store-after'.
+# (advanced) The time after which a metric should be queried from storage and
+# not just ingesters. 0 means all queries are sent to store. If this option is
+# enabled, the time range of the query sent to the store-gateway will be
+# manipulated to ensure the query end is not more recent than 'now -
+# query-store-after'.
 # CLI flag: -querier.query-store-after
-[query_store_after: <duration> | default = 0s]
+[query_store_after: <duration> | default = 12h]
 
 # (advanced) Maximum duration into the future you can query. 0 to disable.
 # CLI flag: -querier.max-query-into-future
@@ -924,15 +836,14 @@ store_gateway_client:
   # CLI flag: -querier.store-gateway-client.tls-insecure-skip-verify
   [tls_insecure_skip_verify: <boolean> | default = false]
 
-# (advanced) When distributor's sharding strategy is shuffle-sharding and this
-# setting is > 0, queriers fetch in-memory series from the minimum set of
-# required ingesters, selecting only ingesters which may have received series
-# since 'now - lookback period'. The lookback period should be greater or equal
-# than the configured -querier.query-store-after and
+# (advanced) When this setting is > 0, queriers fetch in-memory series from the
+# minimum set of required ingesters, selecting only ingesters which may have
+# received series since 'now - lookback period'. The lookback period should be
+# greater or equal than the configured -querier.query-store-after and
 # -querier.query-ingesters-within. If this setting is 0, queriers always query
 # all ingesters (ingesters shuffle sharding on read path is disabled).
 # CLI flag: -querier.shuffle-sharding-ingesters-lookback-period
-[shuffle_sharding_ingesters_lookback_period: <duration> | default = 0s]
+[shuffle_sharding_ingesters_lookback_period: <duration> | default = 13h]
 
 # The maximum number of concurrent queries. This config option should be set on
 # query-frontend too when query sharding is enabled.
@@ -1135,6 +1046,95 @@ results_cache:
 # (advanced) URL of downstream Prometheus.
 # CLI flag: -query-frontend.downstream-url
 [downstream_url: <string> | default = ""]
+```
+
+### query_scheduler
+
+The `query_scheduler` block configures the query-scheduler.
+
+```yaml
+# Maximum number of outstanding requests per tenant per query-scheduler.
+# In-flight requests above this limit will fail with HTTP response status code
+# 429.
+# CLI flag: -query-scheduler.max-outstanding-requests-per-tenant
+[max_outstanding_requests_per_tenant: <int> | default = 100]
+
+# (experimental) If a querier disconnects without sending notification about
+# graceful shutdown, the query-scheduler will keep the querier in the tenant's
+# shard until the forget delay has passed. This feature is useful to reduce the
+# blast radius when shuffle-sharding is enabled.
+# CLI flag: -query-scheduler.querier-forget-delay
+[querier_forget_delay: <duration> | default = 0s]
+
+# This configures the gRPC client used to report errors back to the
+# query-frontend.
+grpc_client_config:
+  # (advanced) gRPC client max receive message size (bytes).
+  # CLI flag: -query-scheduler.grpc-client-config.grpc-max-recv-msg-size
+  [max_recv_msg_size: <int> | default = 104857600]
+
+  # (advanced) gRPC client max send message size (bytes).
+  # CLI flag: -query-scheduler.grpc-client-config.grpc-max-send-msg-size
+  [max_send_msg_size: <int> | default = 104857600]
+
+  # (advanced) Use compression when sending messages. Supported values are:
+  # 'gzip', 'snappy' and '' (disable compression)
+  # CLI flag: -query-scheduler.grpc-client-config.grpc-compression
+  [grpc_compression: <string> | default = ""]
+
+  # (advanced) Rate limit for gRPC client; 0 means disabled.
+  # CLI flag: -query-scheduler.grpc-client-config.grpc-client-rate-limit
+  [rate_limit: <float> | default = 0]
+
+  # (advanced) Rate limit burst for gRPC client.
+  # CLI flag: -query-scheduler.grpc-client-config.grpc-client-rate-limit-burst
+  [rate_limit_burst: <int> | default = 0]
+
+  # (advanced) Enable backoff and retry when we hit ratelimits.
+  # CLI flag: -query-scheduler.grpc-client-config.backoff-on-ratelimits
+  [backoff_on_ratelimits: <boolean> | default = false]
+
+  backoff_config:
+    # (advanced) Minimum delay when backing off.
+    # CLI flag: -query-scheduler.grpc-client-config.backoff-min-period
+    [min_period: <duration> | default = 100ms]
+
+    # (advanced) Maximum delay when backing off.
+    # CLI flag: -query-scheduler.grpc-client-config.backoff-max-period
+    [max_period: <duration> | default = 10s]
+
+    # (advanced) Number of times to backoff and retry before failing.
+    # CLI flag: -query-scheduler.grpc-client-config.backoff-retries
+    [max_retries: <int> | default = 10]
+
+  # (advanced) Enable TLS in the GRPC client. This flag needs to be enabled when
+  # any other TLS flag is set. If set to false, insecure connection to gRPC
+  # server will be used.
+  # CLI flag: -query-scheduler.grpc-client-config.tls-enabled
+  [tls_enabled: <boolean> | default = false]
+
+  # (advanced) Path to the client certificate file, which will be used for
+  # authenticating with the server. Also requires the key path to be configured.
+  # CLI flag: -query-scheduler.grpc-client-config.tls-cert-path
+  [tls_cert_path: <string> | default = ""]
+
+  # (advanced) Path to the key file for the client certificate. Also requires
+  # the client certificate to be configured.
+  # CLI flag: -query-scheduler.grpc-client-config.tls-key-path
+  [tls_key_path: <string> | default = ""]
+
+  # (advanced) Path to the CA certificates file to validate server certificate
+  # against. If not set, the host's root CA certificates are used.
+  # CLI flag: -query-scheduler.grpc-client-config.tls-ca-path
+  [tls_ca_path: <string> | default = ""]
+
+  # (advanced) Override the expected name on the server certificate.
+  # CLI flag: -query-scheduler.grpc-client-config.tls-server-name
+  [tls_server_name: <string> | default = ""]
+
+  # (advanced) Skip validating server certificate.
+  # CLI flag: -query-scheduler.grpc-client-config.tls-insecure-skip-verify
+  [tls_insecure_skip_verify: <boolean> | default = false]
 ```
 
 ### ruler
@@ -1394,6 +1394,81 @@ ring:
 # CLI flag: -ruler.query-stats-enabled
 [query_stats_enabled: <boolean> | default = false]
 
+query_frontend:
+  # GRPC listen address of the query-frontend(s). Must be a DNS address
+  # (prefixed with dns:///) to enable client side load balancing.
+  # CLI flag: -ruler.query-frontend.address
+  [address: <string> | default = ""]
+
+  grpc_client_config:
+    # (advanced) gRPC client max receive message size (bytes).
+    # CLI flag: -ruler.query-frontend.grpc-client-config.grpc-max-recv-msg-size
+    [max_recv_msg_size: <int> | default = 104857600]
+
+    # (advanced) gRPC client max send message size (bytes).
+    # CLI flag: -ruler.query-frontend.grpc-client-config.grpc-max-send-msg-size
+    [max_send_msg_size: <int> | default = 104857600]
+
+    # (advanced) Use compression when sending messages. Supported values are:
+    # 'gzip', 'snappy' and '' (disable compression)
+    # CLI flag: -ruler.query-frontend.grpc-client-config.grpc-compression
+    [grpc_compression: <string> | default = ""]
+
+    # (advanced) Rate limit for gRPC client; 0 means disabled.
+    # CLI flag: -ruler.query-frontend.grpc-client-config.grpc-client-rate-limit
+    [rate_limit: <float> | default = 0]
+
+    # (advanced) Rate limit burst for gRPC client.
+    # CLI flag: -ruler.query-frontend.grpc-client-config.grpc-client-rate-limit-burst
+    [rate_limit_burst: <int> | default = 0]
+
+    # (advanced) Enable backoff and retry when we hit ratelimits.
+    # CLI flag: -ruler.query-frontend.grpc-client-config.backoff-on-ratelimits
+    [backoff_on_ratelimits: <boolean> | default = false]
+
+    backoff_config:
+      # (advanced) Minimum delay when backing off.
+      # CLI flag: -ruler.query-frontend.grpc-client-config.backoff-min-period
+      [min_period: <duration> | default = 100ms]
+
+      # (advanced) Maximum delay when backing off.
+      # CLI flag: -ruler.query-frontend.grpc-client-config.backoff-max-period
+      [max_period: <duration> | default = 10s]
+
+      # (advanced) Number of times to backoff and retry before failing.
+      # CLI flag: -ruler.query-frontend.grpc-client-config.backoff-retries
+      [max_retries: <int> | default = 10]
+
+    # (advanced) Enable TLS in the GRPC client. This flag needs to be enabled
+    # when any other TLS flag is set. If set to false, insecure connection to
+    # gRPC server will be used.
+    # CLI flag: -ruler.query-frontend.grpc-client-config.tls-enabled
+    [tls_enabled: <boolean> | default = false]
+
+    # (advanced) Path to the client certificate file, which will be used for
+    # authenticating with the server. Also requires the key path to be
+    # configured.
+    # CLI flag: -ruler.query-frontend.grpc-client-config.tls-cert-path
+    [tls_cert_path: <string> | default = ""]
+
+    # (advanced) Path to the key file for the client certificate. Also requires
+    # the client certificate to be configured.
+    # CLI flag: -ruler.query-frontend.grpc-client-config.tls-key-path
+    [tls_key_path: <string> | default = ""]
+
+    # (advanced) Path to the CA certificates file to validate server certificate
+    # against. If not set, the host's root CA certificates are used.
+    # CLI flag: -ruler.query-frontend.grpc-client-config.tls-ca-path
+    [tls_ca_path: <string> | default = ""]
+
+    # (advanced) Override the expected name on the server certificate.
+    # CLI flag: -ruler.query-frontend.grpc-client-config.tls-server-name
+    [tls_server_name: <string> | default = ""]
+
+    # (advanced) Skip validating server certificate.
+    # CLI flag: -ruler.query-frontend.grpc-client-config.tls-insecure-skip-verify
+    [tls_insecure_skip_verify: <boolean> | default = false]
+
 tenant_federation:
   # Enable running rule groups against multiple tenants. The tenant IDs involved
   # need to be in the rule group's 'source_tenants' field. If this flag is set
@@ -1496,9 +1571,17 @@ gcs:
   # CLI flag: -ruler-storage.gcs.bucket-name
   [bucket_name: <string> | default = ""]
 
-  # JSON representing either a Google Developers Console client_credentials.json
-  # file or a Google Developers service account key file. If empty, fallback to
-  # Google default logic.
+  # JSON either from a Google Developers Console client_credentials.json file,
+  # or a Google Developers service account key. Needs to be valid JSON, not a
+  # filesystem path. If empty, fallback to Google default logic:
+  # 1. A JSON file whose path is specified by the GOOGLE_APPLICATION_CREDENTIALS
+  # environment variable. For workload identity federation, refer to
+  # https://cloud.google.com/iam/docs/how-to#using-workload-identity-federation
+  # on how to generate the JSON configuration file for on-prem/non-Google cloud
+  # platforms.
+  # 2. A JSON file in a location known to the gcloud command-line tool:
+  # $HOME/.config/gcloud/application_default_credentials.json.
+  # 3. On Google Compute Engine it fetches credentials from the metadata server.
   # CLI flag: -ruler-storage.gcs.service-account
   [service_account: <string> | default = ""]
 
@@ -1635,7 +1718,10 @@ The `alertmanager` block configures the alertmanager.
 # CLI flag: -alertmanager.storage.path
 [data_dir: <string> | default = "./data-alertmanager/"]
 
-# (advanced) How long to keep data for.
+# (advanced) How long should we store stateful data (notification logs and
+# silences). For notification log entries, refers to how long should we keep
+# entries before they expire and are deleted. For silences, refers to how long
+# should tenants view silences after they expire and are deleted.
 # CLI flag: -alertmanager.storage.retention
 [retention: <duration> | default = 120h]
 
@@ -1930,9 +2016,17 @@ gcs:
   # CLI flag: -alertmanager-storage.gcs.bucket-name
   [bucket_name: <string> | default = ""]
 
-  # JSON representing either a Google Developers Console client_credentials.json
-  # file or a Google Developers service account key file. If empty, fallback to
-  # Google default logic.
+  # JSON either from a Google Developers Console client_credentials.json file,
+  # or a Google Developers service account key. Needs to be valid JSON, not a
+  # filesystem path. If empty, fallback to Google default logic:
+  # 1. A JSON file whose path is specified by the GOOGLE_APPLICATION_CREDENTIALS
+  # environment variable. For workload identity federation, refer to
+  # https://cloud.google.com/iam/docs/how-to#using-workload-identity-federation
+  # on how to generate the JSON configuration file for on-prem/non-Google cloud
+  # platforms.
+  # 2. A JSON file in a location known to the gcloud command-line tool:
+  # $HOME/.config/gcloud/application_default_credentials.json.
+  # 3. On Google Compute Engine it fetches credentials from the metadata server.
   # CLI flag: -alertmanager-storage.gcs.service-account
   [service_account: <string> | default = ""]
 
@@ -2590,6 +2684,20 @@ The `limits` block configures default and per-tenant limits imposed by component
 # CLI flag: -ingester.max-global-exemplars-per-user
 [max_global_exemplars_per_user: <int> | default = 0]
 
+# (advanced) Additional custom trackers for active metrics. If there are active
+# series matching a provided matcher (map value), the count will be exposed in
+# the custom trackers metric labeled using the tracker name (map key). Zero
+# valued counts are not exposed (and removed when they go back to zero).
+# Example:
+#   The following configuration will count the active series coming from dev and
+#   prod namespaces for each tenant and label them as {name="dev"} and
+#   {name="prod"} in the cortex_ingester_active_series_custom_tracker metric.
+#   active_series_custom_trackers_config:
+#       dev: '{namespace=~"dev-.*"}'
+#       prod: '{namespace=~"prod-.*"}'
+# CLI flag: -ingester.active-series-custom-trackers
+[active_series_custom_trackers_config: <map of tracker name (string) to matcher (string)> | default = ]
+
 # Maximum number of chunks that can be fetched in a single query from ingesters
 # and long-term storage. This limit is enforced in the querier, ruler and
 # store-gateway. 0 to disable.
@@ -2898,9 +3006,17 @@ gcs:
   # CLI flag: -blocks-storage.gcs.bucket-name
   [bucket_name: <string> | default = ""]
 
-  # JSON representing either a Google Developers Console client_credentials.json
-  # file or a Google Developers service account key file. If empty, fallback to
-  # Google default logic.
+  # JSON either from a Google Developers Console client_credentials.json file,
+  # or a Google Developers service account key. Needs to be valid JSON, not a
+  # filesystem path. If empty, fallback to Google default logic:
+  # 1. A JSON file whose path is specified by the GOOGLE_APPLICATION_CREDENTIALS
+  # environment variable. For workload identity federation, refer to
+  # https://cloud.google.com/iam/docs/how-to#using-workload-identity-federation
+  # on how to generate the JSON configuration file for on-prem/non-Google cloud
+  # platforms.
+  # 2. A JSON file in a location known to the gcloud command-line tool:
+  # $HOME/.config/gcloud/application_default_credentials.json.
+  # 3. On Google Compute Engine it fetches credentials from the metadata server.
   # CLI flag: -blocks-storage.gcs.service-account
   [service_account: <string> | default = ""]
 
@@ -3106,7 +3222,7 @@ bucket_store:
     # level in-memory LRU cache. Metadata will be stored and fetched in-memory
     # before hitting the cache backend. 0 to disable the in-memory cache.
     # CLI flag: -blocks-storage.bucket-store.chunks-cache.attributes-in-memory-max-items
-    [attributes_in_memory_max_items: <int> | default = 0]
+    [attributes_in_memory_max_items: <int> | default = 50000]
 
     # (advanced) TTL for caching individual chunks subranges.
     # CLI flag: -blocks-storage.bucket-store.chunks-cache.subrange-ttl
@@ -3215,7 +3331,7 @@ bucket_store:
   # are usually many of them (depending on number of ingesters) and they are not
   # yet compacted. Negative values or 0 disable the filter.
   # CLI flag: -blocks-storage.bucket-store.ignore-blocks-within
-  [ignore_blocks_within: <duration> | default = 0s]
+  [ignore_blocks_within: <duration> | default = 10h]
 
   # (advanced) Max size - in bytes - of a chunks pool, used to reduce memory
   # allocations. The pool is shared across all tenants. 0 to disable the limit.
@@ -3267,10 +3383,11 @@ tsdb:
   # CLI flag: -blocks-storage.tsdb.block-ranges-period
   [block_ranges_period: <list of duration> | default = 2h0m0s]
 
-  # TSDB blocks retention in the ingester before a block is removed. This should
-  # be larger than the -blocks-storage.tsdb.block-ranges-period,
-  # -querier.query-store-after and large enough to give store-gateways and
-  # queriers enough time to discover newly uploaded blocks.
+  # TSDB blocks retention in the ingester before a block is removed, relative to
+  # the newest block written for the tenant. This should be larger than the
+  # -blocks-storage.tsdb.block-ranges-period, -querier.query-store-after and
+  # large enough to give store-gateways and queriers enough time to discover
+  # newly uploaded blocks.
   # CLI flag: -blocks-storage.tsdb.retention-period
   [retention_period: <duration> | default = 24h]
 
@@ -3349,14 +3466,20 @@ tsdb:
   # (experimental) The size of the write queue used by the head chunks mapper.
   # Lower values reduce memory utilisation at the cost of potentially higher
   # ingest latency. Value of 0 switches chunks mapper to implementation without
-  # a queue.
+  # a queue. This flag is only used if the new chunk disk mapper is enabled with
+  # -blocks-storage.tsdb.new-chunk-disk-mapper.
   # CLI flag: -blocks-storage.tsdb.head-chunks-write-queue-size
   [head_chunks_write_queue_size: <int> | default = 0]
 
-  # (advanced) Enables TSDB isolation feature. Disabling may improve
-  # performance.
+  # (experimental) Temporary flag to select whether to use the new (used in
+  # upstream Prometheus) or the old (legacy) chunk disk mapper.
+  # CLI flag: -blocks-storage.tsdb.new-chunk-disk-mapper
+  [new_chunk_disk_mapper: <boolean> | default = false]
+
+  # (advanced) [Deprecated] Enables TSDB isolation feature. Disabling may
+  # improve performance.
   # CLI flag: -blocks-storage.tsdb.isolation-enabled
-  [isolation_enabled: <boolean> | default = true]
+  [isolation_enabled: <boolean> | default = false]
 
   # (advanced) Max size - in bytes - of the in-memory series hash cache. The
   # cache is shared across all tenants and it's used only when query sharding is
@@ -3666,6 +3789,11 @@ sharding_ring:
   # Unregister from the ring upon clean shutdown.
   # CLI flag: -store-gateway.sharding-ring.unregister-on-shutdown
   [unregister_on_shutdown: <boolean> | default = true]
+
+# (experimental) Number of OS threads that are dedicated for handling requests.
+# Set to 0 to disable use of dedicated OS threads for handling requests.
+# CLI flag: -store-gateway.thread-pool-size
+[thread_pool_size: <int> | default = 0]
 ```
 
 ### sse

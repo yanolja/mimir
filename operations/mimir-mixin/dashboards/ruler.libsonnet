@@ -1,4 +1,5 @@
 local utils = import 'mixin-utils/utils.libsonnet';
+local filename = 'mimir-ruler.json';
 
 (import 'dashboard-utils.libsonnet') {
   local ruler_config_api_routes_re = '(prometheus|api_prom)_(rules.*|api_v1_(rules|alerts))',
@@ -58,8 +59,8 @@ local utils = import 'mixin-utils/utils.libsonnet';
     },
   },
 
-  'mimir-ruler.json':
-    ($.dashboard('Ruler') + { uid: '44d12bcb1f95661c6ab6bc946dfc3473' })
+  [filename]:
+    ($.dashboard('Ruler') + { uid: std.md5(filename) })
     .addClusterSelectorTemplates()
     .addRow(
       ($.row('Headlines') + {
@@ -103,7 +104,8 @@ local utils = import 'mixin-utils/utils.libsonnet';
         ),
       )
     )
-    .addRow(
+    .addRowIf(
+      $._config.gateway_enabled,
       $.row('Configuration API (gateway)')
       .addPanel(
         $.panel('QPS') +
@@ -116,7 +118,7 @@ local utils = import 'mixin-utils/utils.libsonnet';
       .addPanel(
         $.panel('Per route p99 latency') +
         $.queryPanel(
-          'histogram_quantile(0.99, sum by (route, le) (cluster_job_route:cortex_request_duration_seconds_bucket:sum_rate{%s, route=~"%s"}))' % [$.jobMatcher($._config.job_names.gateway), ruler_config_api_routes_re],
+          'histogram_quantile(0.99, sum by (route, le) (%s_job_route:cortex_request_duration_seconds_bucket:sum_rate{%s, route=~"%s"}))' % [$._config.per_cluster_label, $.jobMatcher($._config.job_names.gateway), ruler_config_api_routes_re],
           '{{ route }}'
         ) +
         { yaxes: $.yaxes('s') }

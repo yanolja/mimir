@@ -1,8 +1,9 @@
 local utils = import 'mixin-utils/utils.libsonnet';
+local filename = 'mimir-scaling.json';
 
 (import 'dashboard-utils.libsonnet') {
-  'mimir-scaling.json':
-    ($.dashboard('Scaling') + { uid: '88c041017b96856c9176e07cf557bdcf' })
+  [filename]:
+    ($.dashboard('Scaling') + { uid: std.md5(filename) })
     .addClusterSelectorTemplates()
     .addRow(
       ($.row('Service scaling') + { height: '200px' })
@@ -11,9 +12,10 @@ local utils = import 'mixin-utils/utils.libsonnet';
         title: '',
         options: {
           content: |||
-            This dashboards shows any services which are not scaled correctly.
-            The table below gives the required number of replicas and the reason why.
-            We only show services without enough replicas.
+            This dashboard identifies scaling-related issues by suggesting services that you might want to scale up.
+            The table that follows contains a suggested number of replicas and the reason why.
+            If the system is failing and depending on the reason, try scaling up to the specified number.
+            The specified numbers are intended as helpful guidelines when things go wrong, rather than prescriptive guidelines.
 
             Reasons:
             - **sample_rate**: There are not enough replicas to handle the
@@ -41,11 +43,11 @@ local utils = import 'mixin-utils/utils.libsonnet';
         $.tablePanel([
           |||
             sort_desc(
-              cluster_namespace_deployment_reason:required_replicas:count{cluster=~"$cluster", namespace=~"$namespace"}
+              %s_deployment_reason:required_replicas:count{%s}
                 > ignoring(reason) group_left
-              cluster_namespace_deployment:actual_replicas:count{cluster=~"$cluster", namespace=~"$namespace"}
+              %s_deployment:actual_replicas:count{%s}
             )
-          |||,
+          ||| % [$._config.alert_aggregation_rule_prefix, $.namespaceMatcher(), $._config.alert_aggregation_rule_prefix, $.namespaceMatcher()],
         ], {
           __name__: { alias: 'Cluster', type: 'hidden' },
           cluster: { alias: 'Cluster' },

@@ -37,15 +37,18 @@
     JAEGER_REPORTER_MAX_QUEUE_SIZE: '1024',  // Default is 100.
   },
 
-  querier_container::
-    container.new('querier', $._images.querier) +
+  newQuerierContainer(name, args)::
+    container.new(name, $._images.querier) +
     container.withPorts($.querier_ports) +
-    container.withArgsMixin($.util.mapToFlags($.querier_args)) +
+    container.withArgsMixin($.util.mapToFlags(args)) +
     $.jaeger_mixin +
     $.util.readinessProbe +
     container.withEnvMap($.querier_env_map) +
     $.util.resourcesRequests('1', '12Gi') +
     $.util.resourcesLimits(null, '24Gi'),
+
+  querier_container::
+    self.newQuerierContainer('querier', $.querier_args),
 
   local deployment = $.apps.v1.deployment,
 
@@ -53,6 +56,7 @@
     deployment.new(name, $._config.querier.replicas, [container]) +
     (if $._config.querier_allow_multiple_replicas_on_same_node then {} else $.util.antiAffinity) +
     $.util.configVolumeMount($._config.overrides_configmap, $._config.overrides_configmap_mountpoint) +
+    (if !std.isObject($._config.node_selector) then {} else deployment.mixin.spec.template.spec.withNodeSelectorMixin($._config.node_selector)) +
     deployment.mixin.spec.strategy.rollingUpdate.withMaxSurge(5) +
     deployment.mixin.spec.strategy.rollingUpdate.withMaxUnavailable(1),
 

@@ -26,15 +26,7 @@
       'ruler.ring.store': 'consul',
       'ruler.ring.consul.hostname': 'consul.%s.svc.cluster.local:8500' % $._config.namespace,
 
-      // Limits
-      'server.grpc-max-send-msg-size-bytes': 10 * 1024 * 1024,
-      'server.grpc-max-recv-msg-size-bytes': 10 * 1024 * 1024,
-
       'server.http-listen-port': $._config.server_http_port,
-
-      // Do not extend the replication set on unhealthy (or LEAVING) ingester when "unregister on shutdown"
-      // is set to false.
-      'distributor.extend-writes': $._config.unregister_ingesters_on_shutdown,
     },
 
   ruler_container::
@@ -53,6 +45,7 @@
   ruler_deployment:
     if $._config.ruler_enabled then
       deployment.new('ruler', 2, [$.ruler_container]) +
+      (if !std.isObject($._config.node_selector) then {} else deployment.mixin.spec.template.spec.withNodeSelectorMixin($._config.node_selector)) +
       deployment.mixin.spec.strategy.rollingUpdate.withMaxSurge(0) +
       deployment.mixin.spec.strategy.rollingUpdate.withMaxUnavailable(1) +
       deployment.mixin.spec.template.spec.withTerminationGracePeriodSeconds(600) +

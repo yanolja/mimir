@@ -31,10 +31,6 @@
       'distributor.ring.store': 'consul',
       'distributor.ring.consul.hostname': 'consul.%s.svc.cluster.local:8500' % $._config.namespace,
       'distributor.ring.prefix': '',
-
-      // Do not extend the replication set on unhealthy (or LEAVING) ingester when "unregister on shutdown"
-      // is set to false.
-      'distributor.extend-writes': $._config.unregister_ingesters_on_shutdown,
     },
 
   distributor_ports:: $.util.defaultPorts,
@@ -54,6 +50,7 @@
     deployment.new('distributor', 3, [$.distributor_container]) +
     (if $._config.distributor_allow_multiple_replicas_on_same_node then {} else $.util.antiAffinity) +
     $.util.configVolumeMount($._config.overrides_configmap, $._config.overrides_configmap_mountpoint) +
+    (if !std.isObject($._config.node_selector) then {} else deployment.mixin.spec.template.spec.withNodeSelectorMixin($._config.node_selector)) +
     deployment.mixin.spec.strategy.rollingUpdate.withMaxSurge(5) +
     deployment.mixin.spec.strategy.rollingUpdate.withMaxUnavailable(1),
 

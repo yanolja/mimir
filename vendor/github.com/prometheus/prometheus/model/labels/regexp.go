@@ -14,9 +14,10 @@
 package labels
 
 import (
-	"regexp"
-	"regexp/syntax"
 	"strings"
+
+	"github.com/grafana/regexp"
+	"github.com/grafana/regexp/syntax"
 )
 
 const maxSetMatches = 256
@@ -162,6 +163,9 @@ func clearBeginEndText(re *syntax.Regexp) {
 	}
 	if len(re.Sub) == 1 {
 		if re.Sub[0].Op == syntax.OpBeginText || re.Sub[0].Op == syntax.OpEndText {
+			// We need to remove this element. Since it's the only one, we convert into a matcher of an empty string.
+			// OpEmptyMatch is regexp's nop operator.
+			re.Op = syntax.OpEmptyMatch
 			re.Sub = nil
 			return
 		}

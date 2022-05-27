@@ -36,12 +36,28 @@ func CortexToMimirMapper() Mapper {
 		mapRulerAlertmanagerS3URL("alertmanager.storage", "alertmanager_storage"), mapRulerAlertmanagerS3URL("ruler.storage", "ruler_storage"),
 		// Map `-*.s3.bucketnames` and (maybe part of `-*s3.s3.url`) to `-*.s3.bucket-name`
 		mapRulerAlertmanagerS3Buckets("alertmanager.storage", "alertmanager_storage"), mapRulerAlertmanagerS3Buckets("ruler.storage", "ruler_storage"),
-		// Prevent server.http_listen_port from being updated with a new default and always output it.
+		// Prevent server.http_listen_port from being updated with a new default (8080) implicitly and always set it to the old default (80)
 		setOldDefaultExplicitly("server.http_listen_port"),
 		// Manually override the dynamic fields' default values.
 		MapperFunc(mapCortexRingInstanceIDDefaults),
 		// Set frontend.results_cache.backend when results cache was enabled in cortex
 		MapperFunc(mapQueryFrontendBackend),
+		// Prevent *_storage.backend from being updated with a new default (filesystem) implicitly and always set it to the old default (s3)
+		setOldDefaultExplicitly("blocks_storage.backend"),
+		setOldDefaultExplicitly("ruler_storage.backend"),
+		setOldDefaultExplicitly("alertmanager_storage.backend"),
+		// Prevent activity_tracker.filepath from being updates with a new default (./metrics-activity.log) implicitly and always set it to the old default (./active-query-tracker)
+		setOldDefaultWithNewPathExplicitly("querier.active_query_tracker_dir", "activity_tracker.filepath"),
+		// Prevent alertmanager.data_dir from being updates with a new default (./data-alertmanager/) implicitly and always set it to the old default (data/)
+		setOldDefaultExplicitly("alertmanager.data_dir"),
+		// Prevent blocks_storage.filesystem.dir from being updates with a new default (blocks) implicitly and always set it to the old default ("")
+		setOldDefaultExplicitly("blocks_storage.filesystem.dir"),
+		// Prevent compactor.data_dir from being updates with a new default (./data-compactor/) implicitly and always set it to the old default (./data)
+		setOldDefaultExplicitly("compactor.data_dir"),
+		// Prevent ruler.rule_path from being updates with a new default (./data-ruler/) implicitly and always set it to the old default (/rules)
+		setOldDefaultExplicitly("ruler.rule_path"),
+		// Prevent ruler_storage.filesystem.dir from being updates with a new default (ruler) implicitly and always set it to the old default ("")
+		setOldDefaultExplicitly("ruler_storage.filesystem.dir"),
 	}
 }
 
@@ -517,18 +533,22 @@ func mapInstanceInterfaceNames(ifaceNames map[string]string) Mapper {
 }
 
 func setOldDefaultExplicitly(path string) Mapper {
+	return setOldDefaultWithNewPathExplicitly(path, path)
+}
+
+func setOldDefaultWithNewPathExplicitly(oldPath, newPath string) Mapper {
 	return MapperFunc(func(source, target Parameters) error {
-		v, err := source.GetValue(path)
+		v, err := source.GetValue(oldPath)
 		if err != nil {
 			return err
 		}
 
-		if v.IsUnset() || !differentFromDefault(source, path) {
-			err = target.SetValue(path, source.MustGetDefaultValue(path))
+		if v.IsUnset() || !differentFromDefault(source, oldPath) {
+			err = target.SetValue(newPath, source.MustGetDefaultValue(oldPath))
 			// We set the default again after the value itself because when prepareSourceDefaults is mapping defaults
 			// `SetValue` actually sets the default value.
 			// Also set the source default to Nil, so that when updating defaults this parameter isn't affected
-			err2 := target.SetDefaultValue(path, Nil)
+			err2 := target.SetDefaultValue(newPath, Nil)
 			return multierror.New(err, err2).Err()
 		}
 
@@ -544,7 +564,7 @@ func mapQueryFrontendBackend(source, target Parameters) error {
 	return nil
 }
 
-func mapCortexRingInstanceIDDefaults(source, target Parameters) error {
+func mapCortexRingInstanceIDDefaults(_, target Parameters) error {
 	return multierror.New(
 		target.SetDefaultValue("alertmanager.sharding_ring.instance_id", Nil),
 		target.SetDefaultValue("compactor.sharding_ring.instance_id", Nil),

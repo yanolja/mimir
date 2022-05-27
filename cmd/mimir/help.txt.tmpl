@@ -16,7 +16,10 @@ Usage of ./cmd/mimir/mimir:
   -alertmanager-storage.gcs.bucket-name string
     	GCS bucket name
   -alertmanager-storage.gcs.service-account string
-    	JSON representing either a Google Developers Console client_credentials.json file or a Google Developers service account key file. If empty, fallback to Google default logic.
+    	JSON either from a Google Developers Console client_credentials.json file, or a Google Developers service account key. Needs to be valid JSON, not a filesystem path. If empty, fallback to Google default logic: 
+    	1. A JSON file whose path is specified by the GOOGLE_APPLICATION_CREDENTIALS environment variable. For workload identity federation, refer to https://cloud.google.com/iam/docs/how-to#using-workload-identity-federation on how to generate the JSON configuration file for on-prem/non-Google cloud platforms.
+    	2. A JSON file in a location known to the gcloud command-line tool: $HOME/.config/gcloud/application_default_credentials.json.
+    	3. On Google Compute Engine it fetches credentials from the metadata server.
   -alertmanager-storage.local.path string
     	Path at which alertmanager configurations are stored.
   -alertmanager-storage.s3.access-key-id string
@@ -87,8 +90,6 @@ Usage of ./cmd/mimir/mimir:
     	Comma-separated list of network CIDRs to block in Alertmanager receiver integrations.
   -alertmanager.receivers-firewall-block-private-addresses
     	True to block private and local addresses in Alertmanager receiver integrations. It blocks private addresses defined by  RFC 1918 (IPv4 addresses) and RFC 4193 (IPv6 addresses), as well as loopback, local unicast and local multicast addresses.
-  -alertmanager.sharding-ring.consul.acl-token string
-    	ACL Token used to interact with Consul.
   -alertmanager.sharding-ring.consul.hostname string
     	Hostname and port of Consul. (default "localhost:8500")
   -alertmanager.sharding-ring.etcd.endpoints value
@@ -144,7 +145,10 @@ Usage of ./cmd/mimir/mimir:
   -blocks-storage.gcs.bucket-name string
     	GCS bucket name
   -blocks-storage.gcs.service-account string
-    	JSON representing either a Google Developers Console client_credentials.json file or a Google Developers service account key file. If empty, fallback to Google default logic.
+    	JSON either from a Google Developers Console client_credentials.json file, or a Google Developers service account key. Needs to be valid JSON, not a filesystem path. If empty, fallback to Google default logic: 
+    	1. A JSON file whose path is specified by the GOOGLE_APPLICATION_CREDENTIALS environment variable. For workload identity federation, refer to https://cloud.google.com/iam/docs/how-to#using-workload-identity-federation on how to generate the JSON configuration file for on-prem/non-Google cloud platforms.
+    	2. A JSON file in a location known to the gcloud command-line tool: $HOME/.config/gcloud/application_default_credentials.json.
+    	3. On Google Compute Engine it fetches credentials from the metadata server.
   -blocks-storage.s3.access-key-id string
     	S3 access key ID
   -blocks-storage.s3.bucket-name string
@@ -194,15 +198,13 @@ Usage of ./cmd/mimir/mimir:
   -blocks-storage.tsdb.dir string
     	Directory to store TSDBs (including WAL) in the ingesters. This directory is required to be persisted between restarts. (default "./tsdb/")
   -blocks-storage.tsdb.retention-period duration
-    	TSDB blocks retention in the ingester before a block is removed. This should be larger than the -blocks-storage.tsdb.block-ranges-period, -querier.query-store-after and large enough to give store-gateways and queriers enough time to discover newly uploaded blocks. (default 24h0m0s)
+    	TSDB blocks retention in the ingester before a block is removed, relative to the newest block written for the tenant. This should be larger than the -blocks-storage.tsdb.block-ranges-period, -querier.query-store-after and large enough to give store-gateways and queriers enough time to discover newly uploaded blocks. (default 24h0m0s)
   -compactor.blocks-retention-period value
     	Delete blocks containing samples older than the specified retention period. 0 to disable.
   -compactor.compactor-tenant-shard-size int
     	Max number of compactors that can compact blocks for single tenant. 0 to disable the limit and use all compactors.
   -compactor.data-dir string
     	Directory to temporarily store blocks during compaction. This directory is not required to be persisted between restarts. (default "./data-compactor/")
-  -compactor.ring.consul.acl-token string
-    	ACL Token used to interact with Consul.
   -compactor.ring.consul.hostname string
     	Hostname and port of Consul. (default "localhost:8500")
   -compactor.ring.etcd.endpoints value
@@ -223,10 +225,10 @@ Usage of ./cmd/mimir/mimir:
     	Expands ${var} or $var in config according to the values of the environment variables.
   -config.file value
     	Configuration file to load.
+  -distributor.extend-writes value
+    	Deprecated: this setting was used to try writing to an additional ingester in the presence of an ingester not in the ACTIVE state. Mimir now behaves as this setting is always disabled.
   -distributor.ha-tracker.cluster string
     	Prometheus label to look for in samples to identify a Prometheus HA cluster. (default "cluster")
-  -distributor.ha-tracker.consul.acl-token string
-    	ACL Token used to interact with Consul.
   -distributor.ha-tracker.consul.hostname string
     	Hostname and port of Consul. (default "localhost:8500")
   -distributor.ha-tracker.enable
@@ -251,8 +253,6 @@ Usage of ./cmd/mimir/mimir:
     	Per-tenant ingestion rate limit in samples per second. (default 10000)
   -distributor.ingestion-tenant-shard-size int
     	The tenant's shard size used by shuffle-sharding. Must be set both on ingesters and distributors. 0 disables shuffle sharding.
-  -distributor.ring.consul.acl-token string
-    	ACL Token used to interact with Consul.
   -distributor.ring.consul.hostname string
     	Hostname and port of Consul. (default "localhost:8500")
   -distributor.ring.etcd.endpoints value
@@ -279,8 +279,6 @@ Usage of ./cmd/mimir/mimir:
     	The maximum number of active series per metric name, across the cluster before replication. 0 to disable. (default 20000)
   -ingester.max-global-series-per-user int
     	The maximum number of active series per tenant, across the cluster before replication. 0 to disable. (default 150000)
-  -ingester.ring.consul.acl-token string
-    	ACL Token used to interact with Consul.
   -ingester.ring.consul.hostname string
     	Hostname and port of Consul. (default "localhost:8500")
   -ingester.ring.etcd.endpoints value
@@ -339,10 +337,6 @@ Usage of ./cmd/mimir/mimir:
     	Maximum number of split (by time) or partial (by shard) queries that will be scheduled in parallel by the query-frontend for a single input query. This limit is introduced to have a fairer query scheduling and avoid a single query over a large time range saturating all available queriers. (default 14)
   -querier.max-samples int
     	Maximum number of samples a single query can load into memory. This config option should be set on query-frontend too when query sharding is enabled. (default 50000000)
-  -querier.query-ingesters-within duration
-    	Maximum lookback beyond which queries are not sent to ingester. 0 means all queries are sent to ingester. (default 13h0m0s)
-  -querier.query-store-after duration
-    	The time after which a metric should be queried from storage and not just ingesters. 0 means all queries are sent to store. If this option is enabled, the time range of the query sent to the store-gateway will be manipulated to ensure the query end is not more recent than 'now - query-store-after'.
   -querier.scheduler-address string
     	Address of the query-scheduler component, in host:port format. Only one of -querier.frontend-address or -querier.scheduler-address can be set. If neither is set, queries are only received via HTTP endpoint.
   -querier.timeout duration
@@ -388,7 +382,10 @@ Usage of ./cmd/mimir/mimir:
   -ruler-storage.gcs.bucket-name string
     	GCS bucket name
   -ruler-storage.gcs.service-account string
-    	JSON representing either a Google Developers Console client_credentials.json file or a Google Developers service account key file. If empty, fallback to Google default logic.
+    	JSON either from a Google Developers Console client_credentials.json file, or a Google Developers service account key. Needs to be valid JSON, not a filesystem path. If empty, fallback to Google default logic: 
+    	1. A JSON file whose path is specified by the GOOGLE_APPLICATION_CREDENTIALS environment variable. For workload identity federation, refer to https://cloud.google.com/iam/docs/how-to#using-workload-identity-federation on how to generate the JSON configuration file for on-prem/non-Google cloud platforms.
+    	2. A JSON file in a location known to the gcloud command-line tool: $HOME/.config/gcloud/application_default_credentials.json.
+    	3. On Google Compute Engine it fetches credentials from the metadata server.
   -ruler-storage.local.directory string
     	Directory to scan for rules
   -ruler-storage.s3.access-key-id string
@@ -453,8 +450,8 @@ Usage of ./cmd/mimir/mimir:
     	Maximum number of rule groups per-tenant. 0 to disable. (default 70)
   -ruler.max-rules-per-rule-group int
     	Maximum number of rules per rule group per-tenant. 0 to disable. (default 20)
-  -ruler.ring.consul.acl-token string
-    	ACL Token used to interact with Consul.
+  -ruler.query-frontend.address string
+    	GRPC listen address of the query-frontend(s). Must be a DNS address (prefixed with dns:///) to enable client side load balancing.
   -ruler.ring.consul.hostname string
     	Hostname and port of Consul. (default "localhost:8500")
   -ruler.ring.etcd.endpoints value
@@ -483,8 +480,6 @@ Usage of ./cmd/mimir/mimir:
     	HTTP server listen address.
   -server.http-listen-port int
     	HTTP server listen port. (default 8080)
-  -store-gateway.sharding-ring.consul.acl-token string
-    	ACL Token used to interact with Consul.
   -store-gateway.sharding-ring.consul.hostname string
     	Hostname and port of Consul. (default "localhost:8500")
   -store-gateway.sharding-ring.etcd.endpoints value

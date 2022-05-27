@@ -1,16 +1,18 @@
 local utils = import 'mixin-utils/utils.libsonnet';
+local filename = 'mimir-rollout-progress.json';
 
 (import 'dashboard-utils.libsonnet') {
   local config = {
     namespace_matcher: $.namespaceMatcher(),
+    per_cluster_label: $._config.per_cluster_label,
     gateway_job_matcher: $.jobMatcher($._config.job_names.gateway),
     gateway_write_routes_regex: 'api_(v1|prom)_push',
     gateway_read_routes_regex: '(prometheus|api_prom)_api_v1_.+',
-    all_services_regex: std.join('|', ['cortex-gw', 'distributor', 'ingester.*', 'query-frontend.*', 'query-scheduler.*', 'querier.*', 'compactor', 'store-gateway.*', 'ruler', 'alertmanager.*', 'overrides-exporter', 'cortex', 'mimir']),
+    all_services_regex: '.*(%s).*' % std.join('|', ['cortex-gw', 'distributor', 'ingester', 'query-frontend', 'query-scheduler', 'querier', 'compactor', 'store-gateway', 'ruler', 'alertmanager', 'overrides-exporter', 'cortex', 'mimir']),
   },
 
-  'mimir-rollout-progress.json':
-    ($.dashboard('Rollout progress') + { uid: '7544a3a62b1be6ffd919fc990ab8ba8f' })
+  [filename]:
+    ($.dashboard('Rollout progress') + { uid: std.md5(filename) })
     .addClusterSelectorTemplates(false) + {
       // This dashboard uses the new grid system in order to place panels (using gridPos).
       // Because of this we can't use the mixin's addRow() and addPanel().
@@ -127,7 +129,7 @@ local utils = import 'mixin-utils/utils.libsonnet';
 
         $.panel('Writes 99th latency') +
         $.newStatPanel(|||
-          histogram_quantile(0.99, sum by (le) (cluster_job_route:cortex_request_duration_seconds_bucket:sum_rate{%(gateway_job_matcher)s, route=~"%(gateway_write_routes_regex)s"}))
+          histogram_quantile(0.99, sum by (le) (%(per_cluster_label)s_job_route:cortex_request_duration_seconds_bucket:sum_rate{%(gateway_job_matcher)s, route=~"%(gateway_write_routes_regex)s"}))
         ||| % config, unit='s', thresholds=[
           { color: 'green', value: null },
           { color: 'orange', value: 0.2 },
@@ -178,7 +180,7 @@ local utils = import 'mixin-utils/utils.libsonnet';
 
         $.panel('Reads 99th latency') +
         $.newStatPanel(|||
-          histogram_quantile(0.99, sum by (le) (cluster_job_route:cortex_request_duration_seconds_bucket:sum_rate{%(gateway_job_matcher)s, route=~"%(gateway_read_routes_regex)s"}))
+          histogram_quantile(0.99, sum by (le) (%(per_cluster_label)s_job_route:cortex_request_duration_seconds_bucket:sum_rate{%(gateway_job_matcher)s, route=~"%(gateway_read_routes_regex)s"}))
         ||| % config, unit='s', thresholds=[
           { color: 'green', value: null },
           { color: 'orange', value: 1 },
@@ -283,15 +285,15 @@ local utils = import 'mixin-utils/utils.libsonnet';
         $.panel('Latency vs 24h ago') +
         $.queryPanel([|||
           1 - (
-            avg_over_time(histogram_quantile(0.99, sum by (le) (cluster_job_route:cortex_request_duration_seconds_bucket:sum_rate{%(gateway_job_matcher)s, route=~"%(gateway_write_routes_regex)s"} offset 24h))[1h:])
+            avg_over_time(histogram_quantile(0.99, sum by (le) (%(per_cluster_label)s_job_route:cortex_request_duration_seconds_bucket:sum_rate{%(gateway_job_matcher)s, route=~"%(gateway_write_routes_regex)s"} offset 24h))[1h:])
             /
-            avg_over_time(histogram_quantile(0.99, sum by (le) (cluster_job_route:cortex_request_duration_seconds_bucket:sum_rate{%(gateway_job_matcher)s, route=~"%(gateway_write_routes_regex)s"}))[1h:])
+            avg_over_time(histogram_quantile(0.99, sum by (le) (%(per_cluster_label)s_job_route:cortex_request_duration_seconds_bucket:sum_rate{%(gateway_job_matcher)s, route=~"%(gateway_write_routes_regex)s"}))[1h:])
           )
         ||| % config, |||
           1 - (
-            avg_over_time(histogram_quantile(0.99, sum by (le) (cluster_job_route:cortex_request_duration_seconds_bucket:sum_rate{%(gateway_job_matcher)s, route=~"%(gateway_read_routes_regex)s"} offset 24h))[1h:])
+            avg_over_time(histogram_quantile(0.99, sum by (le) (%(per_cluster_label)s_job_route:cortex_request_duration_seconds_bucket:sum_rate{%(gateway_job_matcher)s, route=~"%(gateway_read_routes_regex)s"} offset 24h))[1h:])
             /
-            avg_over_time(histogram_quantile(0.99, sum by (le) (cluster_job_route:cortex_request_duration_seconds_bucket:sum_rate{%(gateway_job_matcher)s, route=~"%(gateway_read_routes_regex)s"}))[1h:])
+            avg_over_time(histogram_quantile(0.99, sum by (le) (%(per_cluster_label)s_job_route:cortex_request_duration_seconds_bucket:sum_rate{%(gateway_job_matcher)s, route=~"%(gateway_read_routes_regex)s"}))[1h:])
           )
         ||| % config], ['writes', 'reads']) + {
           yaxes: $.yaxes({

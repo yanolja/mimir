@@ -2,6 +2,17 @@
 
 This document describes the Mimir release process as well as release shepherd responsibilities. Release shepherds are chosen on a voluntary basis.
 
+## Release schedule
+
+A new Grafana Mimir release is cut approximately every 6 weeks. The following table contains past releases and tentative dates for upcoming releases:
+
+| Version | Date       | Release shepherd  |
+| ------- | ---------- | ----------------- |
+| 2.0.0   | 2022-03-20 | Marco Pracucci    |
+| 2.1.0   | 2022-05-16 | Johanna Ratliff   |
+| 2.2.0   | 2022-06-27 | _To be announced_ |
+| 2.3.0   | 2022-08-08 | _To be announced_ |
+
 ## Release shepherd responsibilities
 
 The release shepherd is responsible for an entire minor release series, meaning all pre- and patch releases of a minor release. The process formally starts with the initial pre-release, but some preparations should be made a few days in advance.
@@ -69,12 +80,14 @@ To publish a release candidate:
 
 ### Publish a stable release
 
-To publish a stable release:
+> **Note:** Technical documentation is automatically published on release tags or release branches with a corresponding release tag. The workflow that publishes documentation is defined in [`publish-technical-documentation-release.yml`](.github/workflows/publish-technical-documentation-release.yml).
+> To publish a stable release:
 
 1. Do not change the release branch directly; make a PR to the release-X.Y branch with VERSION and any CHANGELOG changes.
    1. Ensure the `VERSION` file has **no** `-rc.X` suffix
    1. Update the Mimir version in the following locations:
       - `operations/mimir/images.libsonnet` (`_images.mimir` and `_images.query_tee` fields)
+      - `operations/mimir-rules-action/Dockerfile` (`grafana/mimirtool` image tag)
 1. Update dashboard screenshots
    1. Run `make mixin-screenshots`
    1. Review all updated screenshots and ensure no sensitive data is disclosed
@@ -92,10 +105,6 @@ To publish a stable release:
      - Temporarily enable "Allow merge commits" option in "Settings > Options"
      - Locally merge the `merge-release-X.Y-to-main` branch into `main`, and push the changes to `main` back to GitHub. This doesn't break `main` branch protection, since the PR has been approved already, and it also doesn't require removing the protection.
 1. Open a PR to add the new version to the backward compatibility integration test (`integration/backward_compatibility_test.go`)
-1. Publish release documentation using `./tools/release-docs`:
-   ```console
-   $ ./tools/release-docs /tmp/grafana/website mimir-2.0.0
-   ```
 1. Publish dashboards (done by a Grafana Labs member)
    1. Login to [https://grafana.com](https://grafana.com) with your Grafana Labs account
    1. Open [https://grafana.com/orgs/grafana/dashboards](https://grafana.com/orgs/grafana/dashboards)

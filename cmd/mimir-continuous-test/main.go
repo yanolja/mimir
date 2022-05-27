@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/weaveworks/common/logging"
 	"github.com/weaveworks/common/server"
+	"github.com/weaveworks/common/tracing"
 
 	"github.com/grafana/mimir/pkg/continuoustest"
 	"github.com/grafana/mimir/pkg/util/instrumentation"
@@ -22,6 +23,7 @@ type Config struct {
 	ServerMetricsPort   int
 	LogLevel            logging.Level
 	Client              continuoustest.ClientConfig
+	Manager             continuoustest.ManagerConfig
 	WriteReadSeriesTest continuoustest.WriteReadSeriesTestConfig
 }
 
@@ -29,6 +31,7 @@ func (cfg *Config) RegisterFlags(f *flag.FlagSet) {
 	f.IntVar(&cfg.ServerMetricsPort, "server.metrics-port", 9900, "The port where metrics are exposed.")
 	cfg.LogLevel.RegisterFlags(f)
 	cfg.Client.RegisterFlags(f)
+	cfg.Manager.RegisterFlags(f)
 	cfg.WriteReadSeriesTest.RegisterFlags(f)
 }
 
@@ -41,6 +44,14 @@ func main() {
 	util_log.InitLogger(&server.Config{
 		LogLevel: cfg.LogLevel,
 	})
+
+	// Setting the environment variable JAEGER_AGENT_HOST enables tracing.
+	if trace, err := tracing.NewFromEnv("mimir-continuous-test"); err != nil {
+		level.Error(util_log.Logger).Log("msg", "Failed to setup tracing", "err", err.Error())
+	} else {
+		defer trace.Close()
+	}
+
 	logger := util_log.Logger
 
 	// Run the instrumentation server.
@@ -61,7 +72,7 @@ func main() {
 	}
 
 	// Run continuous testing.
-	m := continuoustest.NewManager()
+	m := continuoustest.NewManager(cfg.Manager)
 	m.AddTest(continuoustest.NewWriteReadSeriesTest(cfg.WriteReadSeriesTest, client, logger, registry))
 	if err := m.Run(context.Background()); err != nil {
 		level.Error(logger).Log("msg", "Failed to run continuous test", "err", err.Error())

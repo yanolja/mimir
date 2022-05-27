@@ -7,8 +7,6 @@ package ruler
 
 import (
 	"context"
-	"io/ioutil"
-	"os"
 	"testing"
 	"time"
 
@@ -17,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/notifier"
+	"github.com/prometheus/prometheus/rules"
 	promRules "github.com/prometheus/prometheus/rules"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/atomic"
@@ -25,11 +24,7 @@ import (
 )
 
 func TestSyncRuleGroups(t *testing.T) {
-	dir, err := ioutil.TempDir("", "rules")
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		_ = os.RemoveAll(dir)
-	})
+	dir := t.TempDir()
 
 	m, err := NewDefaultMultiTenantManager(Config{RulePath: dir}, factory, nil, log.NewNopLogger(), nil)
 	require.NoError(t, err)
@@ -129,7 +124,7 @@ func (m *mockRulesManager) Stop() {
 	close(m.done)
 }
 
-func (m *mockRulesManager) Update(_ time.Duration, _ []string, _ labels.Labels, _ string) error {
+func (m *mockRulesManager) Update(interval time.Duration, files []string, externalLabels labels.Labels, externalURL string, ruleGroupPostProcessFunc rules.RuleGroupPostProcessFunc) error {
 	return nil
 }
 

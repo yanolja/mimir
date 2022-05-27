@@ -64,8 +64,7 @@ func TestBucketStores_InitialSync(t *testing.T) {
 	ctx := context.Background()
 	cfg := prepareStorageConfig(t)
 
-	storageDir, err := ioutil.TempDir(os.TempDir(), "storage-*")
-	require.NoError(t, err)
+	storageDir := t.TempDir()
 
 	for userID, metricName := range userToMetric {
 		generateStorageBlock(t, storageDir, userID, metricName, 10, 100, 15)
@@ -140,8 +139,7 @@ func TestBucketStores_InitialSyncShouldRetryOnFailure(t *testing.T) {
 	ctx := context.Background()
 	cfg := prepareStorageConfig(t)
 
-	storageDir, err := ioutil.TempDir(os.TempDir(), "storage-*")
-	require.NoError(t, err)
+	storageDir := t.TempDir()
 
 	// Generate a block for the user in the storage.
 	generateStorageBlock(t, storageDir, "user-1", "series_1", 10, 100, 15)
@@ -208,8 +206,7 @@ func TestBucketStores_SyncBlocks(t *testing.T) {
 	ctx := context.Background()
 	cfg := prepareStorageConfig(t)
 
-	storageDir, err := ioutil.TempDir(os.TempDir(), "storage-*")
-	require.NoError(t, err)
+	storageDir := t.TempDir()
 
 	bucket, err := filesystem.NewBucketClient(filesystem.Config{Directory: storageDir})
 	require.NoError(t, err)
@@ -285,7 +282,7 @@ func TestBucketStores_syncUsersBlocks(t *testing.T) {
 		"when sharding is enabled only stores for filtered users should be created": {
 			shardingStrategy: func() ShardingStrategy {
 				s := &mockShardingStrategy{}
-				s.On("FilterUsers", mock.Anything, allUsers).Return([]string{"user-1", "user-2"})
+				s.On("FilterUsers", mock.Anything, allUsers).Return([]string{"user-1", "user-2"}, nil)
 				return s
 			}(),
 			expectedStores: 2,
@@ -336,8 +333,7 @@ func testBucketStoresSeriesShouldCorrectlyQuerySeriesSpanningMultipleChunks(t *t
 	cfg.BucketStore.IndexHeaderLazyLoadingEnabled = lazyLoadingEnabled
 	cfg.BucketStore.IndexHeaderLazyLoadingIdleTimeout = time.Minute
 
-	storageDir, err := ioutil.TempDir(os.TempDir(), "storage-*")
-	require.NoError(t, err)
+	storageDir := t.TempDir()
 
 	// Generate a single block with 1 series and a lot of samples.
 	generateStorageBlock(t, storageDir, userID, metricName, 0, 10000, 1)
@@ -348,6 +344,7 @@ func testBucketStoresSeriesShouldCorrectlyQuerySeriesSpanningMultipleChunks(t *t
 	reg := prometheus.NewPedanticRegistry()
 	stores, err := NewBucketStores(cfg, newNoShardingStrategy(), bucket, defaultLimitsOverrides(t), mockLoggingLevel(), log.NewNopLogger(), reg)
 	require.NoError(t, err)
+
 	require.NoError(t, stores.InitialSync(ctx))
 
 	tests := map[string]struct {
@@ -504,17 +501,12 @@ func TestBucketStore_Series_ShouldQueryBlockWithOutOfOrderChunks(t *testing.T) {
 }
 
 func prepareStorageConfig(t *testing.T) mimir_tsdb.BlocksStorageConfig {
-	tmpDir, err := ioutil.TempDir(os.TempDir(), "blocks-sync-*")
-	require.NoError(t, err)
+	tmpDir := t.TempDir()
 
 	cfg := mimir_tsdb.BlocksStorageConfig{}
 	flagext.DefaultValues(&cfg)
 	cfg.BucketStore.BucketIndex.Enabled = false
 	cfg.BucketStore.SyncDir = tmpDir
-
-	t.Cleanup(func() {
-		require.NoError(t, os.RemoveAll(tmpDir))
-	})
 
 	return cfg
 }
@@ -528,11 +520,7 @@ func generateStorageBlock(t *testing.T, storageDir, userID string, metricName st
 
 	// Create a temporary directory where the TSDB is opened,
 	// then it will be snapshotted to the storage directory.
-	tmpDir, err := ioutil.TempDir(os.TempDir(), "tsdb-*")
-	require.NoError(t, err)
-	defer func() {
-		require.NoError(t, os.RemoveAll(tmpDir))
-	}()
+	tmpDir := t.TempDir()
 
 	db, err := tsdb.Open(tmpDir, log.NewNopLogger(), nil, tsdb.DefaultOptions(), nil)
 	require.NoError(t, err)
@@ -604,11 +592,7 @@ func TestBucketStores_deleteLocalFilesForExcludedTenants(t *testing.T) {
 	ctx := context.Background()
 	cfg := prepareStorageConfig(t)
 
-	storageDir, err := ioutil.TempDir(os.TempDir(), "storage-*")
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, os.RemoveAll(storageDir))
-	})
+	storageDir := t.TempDir()
 
 	for userID, metricName := range userToMetric {
 		generateStorageBlock(t, storageDir, userID, metricName, 10, 100, 15)
@@ -712,8 +696,8 @@ type userShardingStrategy struct {
 	users []string
 }
 
-func (u *userShardingStrategy) FilterUsers(ctx context.Context, userIDs []string) []string {
-	return u.users
+func (u *userShardingStrategy) FilterUsers(ctx context.Context, userIDs []string) ([]string, error) {
+	return u.users, nil
 }
 
 func (u *userShardingStrategy) FilterBlocks(ctx context.Context, userID string, metas map[ulid.ULID]*thanos_metadata.Meta, loaded map[ulid.ULID]struct{}, synced *extprom.TxGaugeVec) error {
@@ -746,9 +730,7 @@ func BenchmarkBucketStoreLabelValues(tb *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	dir, err := ioutil.TempDir("", "bench-label-values")
-	assert.NoError(tb, err)
-	defer func() { assert.NoError(tb, os.RemoveAll(dir)) }()
+	dir := tb.TempDir()
 
 	bkt, err := filesystemstore.NewBucket(filepath.Join(dir, "bkt"))
 	assert.NoError(tb, err)
@@ -758,7 +740,7 @@ func BenchmarkBucketStoreLabelValues(tb *testing.B) {
 	series := generateSeries(card)
 	tb.Logf("Total %d series generated", len(series))
 
-	s := prepareStoreWithTestBlocksForSeries(tb, dir, bkt, false, NewChunksLimiterFactory(0), NewSeriesLimiterFactory(0), emptyRelabelConfig, allowAllFilterConf, series)
+	s := prepareStoreWithTestBlocksForSeries(tb, dir, bkt, false, NewChunksLimiterFactory(0), NewSeriesLimiterFactory(0), series)
 	mint, maxt := s.store.TimeRange()
 	assert.Equal(tb, s.minTime, mint)
 	assert.Equal(tb, s.maxTime, maxt)

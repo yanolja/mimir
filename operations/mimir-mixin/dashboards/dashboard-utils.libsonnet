@@ -4,12 +4,33 @@ local utils = import 'mixin-utils/utils.libsonnet';
 
   _config:: error 'must provide _config',
 
+  row(title)::
+    super.row(title) + {
+      addPanelIf(condition, panel)::
+        if condition
+        then self.addPanel(panel)
+        else self,
+    },
+
   // Override the dashboard constructor to add:
   // - default tags,
   // - some links that propagate the selectred cluster.
   dashboard(title)::
     // Prefix the dashboard title with "<product> /" unless configured otherwise.
-    super.dashboard('%(prefix)s%(title)s' % { prefix: $._config.dashboard_prefix, title: title }) + {
+    super.dashboard(
+      title='%(prefix)s%(title)s' % { prefix: $._config.dashboard_prefix, title: title },
+      datasource=$._config.dashboard_datasource,
+      datasource_regex=$._config.datasource_regex
+    ) + {
+      __requires: [
+        {
+          id: 'grafana',
+          name: 'Grafana',
+          type: 'grafana',
+          version: '8.0.0',
+        },
+      ],
+
       addRowIf(condition, row)::
         if condition
         then self.addRow(row)
@@ -54,17 +75,17 @@ local utils = import 'mixin-utils/utils.libsonnet';
           if $._config.singleBinary
           then d.addMultiTemplate('job', 'cortex_build_info', 'job')
           else d
-               .addMultiTemplate('cluster', 'cortex_build_info', 'cluster')
-               .addMultiTemplate('namespace', 'cortex_build_info{cluster=~"$cluster"}', 'namespace')
+               .addMultiTemplate('cluster', 'cortex_build_info', '%s' % $._config.per_cluster_label)
+               .addMultiTemplate('namespace', 'cortex_build_info{%s=~"$cluster"}' % $._config.per_cluster_label, 'namespace')
         else
           if $._config.singleBinary
           then d.addTemplate('job', 'cortex_build_info', 'job')
           else d
-               .addTemplate('cluster', 'cortex_build_info', 'cluster')
-               .addTemplate('namespace', 'cortex_build_info{cluster=~"$cluster"}', 'namespace'),
+               .addTemplate('cluster', 'cortex_build_info', '%s' % $._config.per_cluster_label)
+               .addTemplate('namespace', 'cortex_build_info{%s=~"$cluster"}' % $._config.per_cluster_label, 'namespace'),
 
       addActiveUserSelectorTemplates()::
-        self.addTemplate('user', 'cortex_ingester_active_series{cluster=~"$cluster", namespace=~"$namespace"}', 'user'),
+        self.addTemplate('user', 'cortex_ingester_active_series{%s=~"$cluster", namespace=~"$namespace"}' % $._config.per_cluster_label, 'user'),
 
       addCustomTemplate(name, values, defaultIndex=0):: self {
         templating+: {
@@ -99,17 +120,25 @@ local utils = import 'mixin-utils/utils.libsonnet';
   jobMatcher(job)::
     if $._config.singleBinary
     then 'job=~"$job"'
-    else 'cluster=~"$cluster", job=~"($namespace)/(%s)"' % job,
+    else '%s=~"$cluster", job=~"($namespace)/(%s)"' % [$._config.per_cluster_label, job],
 
   namespaceMatcher()::
     if $._config.singleBinary
     then 'job=~"$job"'
-    else 'cluster=~"$cluster", namespace=~"$namespace"',
+    else '%s=~"$cluster", namespace=~"$namespace"' % $._config.per_cluster_label,
 
   jobSelector(job)::
     if $._config.singleBinary
-    then [utils.selector.noop('cluster'), utils.selector.re('job', '$job')]
-    else [utils.selector.re('cluster', '$cluster'), utils.selector.re('job', '($namespace)/(%s)' % job)],
+    then [utils.selector.noop('%s' % $._config.per_cluster_label), utils.selector.re('job', '$job')]
+    else [utils.selector.re('%s' % $._config.per_cluster_label, '$cluster'), utils.selector.re('job', '($namespace)/(%s)' % job)],
+
+  panel(title)::
+    super.panel(title) + {
+      tooltip+: {
+        shared: false,
+        sort: 0,
+      },
+    },
 
   queryPanel(queries, legends, legendLink=null)::
     super.queryPanel(queries, legends, legendLink) + {
@@ -297,23 +326,27 @@ local utils = import 'mixin-utils/utils.libsonnet';
     else 'label_name="%s"' % containerName,
 
   jobNetworkingRow(title, name)::
+    local vars = $._config {
+      job_matcher: $.jobMatcher($._config.job_names[name]),
+    };
+
     super.row(title)
     .addPanel($.containerNetworkReceiveBytesPanel($._config.instance_names[name]))
     .addPanel($.containerNetworkTransmitBytesPanel($._config.instance_names[name]))
     .addPanel(
       $.panel('Inflight requests (per pod)') +
       $.queryPanel([
-        'avg(cortex_inflight_requests{%s})' % $.jobMatcher($._config.job_names[name]),
-        'max(cortex_inflight_requests{%s})' % $.jobMatcher($._config.job_names[name]),
+        'avg(cortex_inflight_requests{%(job_matcher)s})' % vars,
+        'max(cortex_inflight_requests{%(job_matcher)s})' % vars,
       ], ['avg', 'highest']) +
       { fill: 0 }
     )
     .addPanel(
       $.panel('TCP connections (per pod)') +
       $.queryPanel([
-        'avg(sum by(pod) (cortex_tcp_connections{%s}))' % $.jobMatcher($._config.job_names[name]),
-        'max(sum by(pod) (cortex_tcp_connections{%s}))' % $.jobMatcher($._config.job_names[name]),
-        'min(cortex_tcp_connections_limit{%s})' % $.jobMatcher($._config.job_names[name]),
+        'avg(sum by(%(per_instance_label)s) (cortex_tcp_connections{%(job_matcher)s}))' % vars,
+        'max(sum by(%(per_instance_label)s) (cortex_tcp_connections{%(job_matcher)s}))' % vars,
+        'min(cortex_tcp_connections_limit{%(job_matcher)s})' % vars,
       ], ['avg', 'highest', 'limit']) +
       { fill: 0 }
     ),
@@ -597,4 +630,50 @@ local utils = import 'mixin-utils/utils.libsonnet';
       %s
     ||| % [title, description],
   },
+
+  // Panel query override functions
+  overrideFieldByName(fieldName, overrideProperties):: {
+    matcher: {
+      id: 'byName',
+      options: fieldName,
+    },
+    properties: overrideProperties,
+  },
+
+  overrideProperty(id, value):: { id: id, value: value },
+
+  // Panel query value mapping functions
+  mappingRange(from, to, result):: {
+    type: 'range',
+    options: {
+      from: from,
+      to: to,
+      result: result,
+    },
+  },
+
+  mappingSpecial(match, result):: {
+    type: 'special',
+    options: {
+      match: match,
+      result: result,
+    },
+  },
+
+  // Panel query transformation functions
+
+  transformation(id, options={}):: { id: id, options: options },
+
+  transformationCalculateField(alias, left, operator, right, replaceFields=false)::
+    $.transformation('calculateField', {
+      alias: alias,
+      binary: {
+        left: left,
+        operator: operator,
+        right: right,
+      },
+      mode: 'binary',
+      replaceFields: replaceFields,
+    }),
+
 }

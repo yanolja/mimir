@@ -1,8 +1,9 @@
 local utils = import 'mixin-utils/utils.libsonnet';
+local filename = 'mimir-slow-queries.json';
 
 (import 'dashboard-utils.libsonnet') {
-  'mimir-slow-queries.json':
-    ($.dashboard('Slow queries') + { uid: 'e6f3091e29d2636e3b8393447e925668' })
+  [filename]:
+    ($.dashboard('Slow queries') + { uid: std.md5(filename) })
     .addClusterSelectorTemplates(false)
     .addRow(
       $.row('')
@@ -16,7 +17,7 @@ local utils = import 'mixin-utils/utils.libsonnet';
           targets: [
             {
               // Filter out the remote read endpoint.
-              expr: '{cluster=~"$cluster",namespace=~"$namespace",name=~"query-frontend.*"} |= "query stats" != "/api/v1/read" | logfmt | org_id=~"${tenant_id}" | response_time > ${min_duration}',
+              expr: '{%s=~"$cluster",namespace=~"$namespace",name=~"query-frontend.*"} |= "query stats" != "/api/v1/read" | logfmt | user=~"${tenant_id}" | response_time > ${min_duration}' % $._config.per_cluster_label,
               instant: false,
               legendFormat: '',
               range: true,
@@ -59,7 +60,7 @@ local utils = import 'mixin-utils/utils.libsonnet';
                 },
 
                 // Order fields.
-                local orderedFields = ['ts', 'org_id', 'param_query', 'Time range', 'param_step', 'response_time'],
+                local orderedFields = ['ts', 'user', 'param_query', 'Time range', 'param_step', 'response_time'],
 
                 indexByName: {
                   [orderedFields[i]]: i

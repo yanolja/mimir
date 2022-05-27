@@ -48,6 +48,7 @@ import (
 	"github.com/grafana/mimir/pkg/storegateway"
 	"github.com/grafana/mimir/pkg/storegateway/storegatewaypb"
 	"github.com/grafana/mimir/pkg/util"
+	"github.com/grafana/mimir/pkg/util/globalerror"
 	"github.com/grafana/mimir/pkg/util/limiter"
 	util_log "github.com/grafana/mimir/pkg/util/log"
 	"github.com/grafana/mimir/pkg/util/math"
@@ -63,7 +64,10 @@ const (
 )
 
 var (
-	errMaxChunksPerQueryLimit = "the query hit the max number of chunks limit while fetching chunks from store-gateways for %s (limit: %d)"
+	maxChunksPerQueryLimitMsgFormat = globalerror.MaxChunksPerQuery.MessageWithLimitConfig(
+		validation.MaxChunksPerQueryFlag,
+		"the query exceeded the maximum number of chunks fetched from store-gateways when querying '%s' (limit: %d)",
+	)
 )
 
 // BlocksStoreSet is the interface used to get the clients to query series on a set of blocks.
@@ -356,7 +360,6 @@ func (q *blocksStoreQuerier) LabelNames(matchers ...*labels.Matcher) ([]string, 
 	}
 
 	var (
-		resMtx            sync.Mutex
 		resNameSets       = [][]string{}
 		resWarnings       = storage.Warnings(nil)
 		convertedMatchers = convertMatchersToLabelMatcher(matchers)
@@ -368,10 +371,8 @@ func (q *blocksStoreQuerier) LabelNames(matchers ...*labels.Matcher) ([]string, 
 			return nil, err
 		}
 
-		resMtx.Lock()
 		resNameSets = append(resNameSets, nameSets...)
 		resWarnings = append(resWarnings, warnings...)
-		resMtx.Unlock()
 
 		return queriedBlocks, nil
 	}
@@ -403,8 +404,6 @@ func (q *blocksStoreQuerier) LabelValues(name string, matchers ...*labels.Matche
 	var (
 		resValueSets = [][]string{}
 		resWarnings  = storage.Warnings(nil)
-
-		resultMtx sync.Mutex
 	)
 
 	queryFunc := func(clients map[BlocksStoreClient][]ulid.ULID, minT, maxT int64) ([]ulid.ULID, error) {
@@ -413,10 +412,8 @@ func (q *blocksStoreQuerier) LabelValues(name string, matchers ...*labels.Matche
 			return nil, err
 		}
 
-		resultMtx.Lock()
 		resValueSets = append(resValueSets, valueSets...)
 		resWarnings = append(resWarnings, warnings...)
-		resultMtx.Unlock()
 
 		return queriedBlocks, nil
 	}
@@ -446,8 +443,6 @@ func (q *blocksStoreQuerier) selectSorted(sp *storage.SelectHints, matchers ...*
 
 		maxChunksLimit  = q.limits.MaxChunksPerQuery(q.userID)
 		leftChunksLimit = maxChunksLimit
-
-		resultMtx sync.Mutex
 	)
 
 	shard, _, err := sharding.ShardFromMatchers(matchers)
@@ -461,8 +456,6 @@ func (q *blocksStoreQuerier) selectSorted(sp *storage.SelectHints, matchers ...*
 			return nil, err
 		}
 
-		resultMtx.Lock()
-
 		resSeriesSets = append(resSeriesSets, seriesSets...)
 		resWarnings = append(resWarnings, warnings...)
 
@@ -471,7 +464,6 @@ func (q *blocksStoreQuerier) selectSorted(sp *storage.SelectHints, matchers ...*
 		if maxChunksLimit > 0 {
 			leftChunksLimit -= numChunks
 		}
-		resultMtx.Unlock()
 
 		return queriedBlocks, nil
 	}
@@ -762,7 +754,7 @@ func (q *blocksStoreQuerier) fetchSeriesFromStores(
 					if maxChunksLimit > 0 {
 						actual := numChunks.Add(int32(chunksCount))
 						if actual > int32(leftChunksLimit) {
-							return validation.LimitError(fmt.Sprintf(errMaxChunksPerQueryLimit, util.LabelMatchersToString(matchers), maxChunksLimit))
+							return validation.LimitError(fmt.Sprintf(maxChunksPerQueryLimitMsgFormat, util.LabelMatchersToString(matchers), maxChunksLimit))
 						}
 					}
 					if chunkBytesLimitErr := queryLimiter.AddChunkBytes(chunksSize); chunkBytesLimitErr != nil {

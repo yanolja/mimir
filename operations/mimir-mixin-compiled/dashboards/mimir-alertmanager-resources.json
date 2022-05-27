@@ -1,4 +1,12 @@
 {
+      "__requires": [
+         {
+            "id": "grafana",
+            "name": "Grafana",
+            "type": "grafana",
+            "version": "8.0.0"
+         }
+      ],
       "annotations": {
          "list": [ ]
       },
@@ -1258,7 +1266,7 @@
                   "value": "default"
                },
                "hide": 0,
-               "label": null,
+               "label": "Data Source",
                "name": "datasource",
                "options": [ ],
                "query": "prometheus",
@@ -1345,6 +1353,6 @@
       },
       "timezone": "utc",
       "title": "Mimir / Alertmanager resources",
-      "uid": "68b66aed90ccab448009089544a8d6c6",
+      "uid": "a6883fb22799ac74479c7db872451092",
       "version": 0
    }

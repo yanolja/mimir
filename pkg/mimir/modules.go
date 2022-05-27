@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/go-kit/log/level"
+	"github.com/grafana/dskit/flagext"
 	"github.com/grafana/dskit/kv/codec"
 	"github.com/grafana/dskit/kv/memberlist"
 	"github.com/grafana/dskit/modules"
@@ -24,8 +25,10 @@ import (
 	"github.com/opentracing/opentracing-go"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/rules"
 	prom_storage "github.com/prometheus/prometheus/storage"
+	prom_remote "github.com/prometheus/prometheus/storage/remote"
 	"github.com/thanos-io/thanos/pkg/discovery/dns"
 	httpgrpc_server "github.com/weaveworks/common/httpgrpc/server"
 	"github.com/weaveworks/common/server"
@@ -200,7 +203,6 @@ func (t *Mimir) initServer() (services.Service, error) {
 }
 
 func (t *Mimir) initRing() (serv services.Service, err error) {
-	t.Cfg.Ingester.IngesterRing.KVStore.Multi.ConfigProvider = multiClientRuntimeConfigChannel(t.RuntimeConfig)
 	t.Ring, err = ring.New(t.Cfg.Ingester.IngesterRing.ToRingConfig(), "ingester", ingester.IngesterRingKey, util_log.Logger, prometheus.WrapRegistererWithPrefix("cortex_", prometheus.DefaultRegisterer))
 	if err != nil {
 		return nil, err
@@ -209,6 +211,20 @@ func (t *Mimir) initRing() (serv services.Service, err error) {
 }
 
 func (t *Mimir) initRuntimeConfig() (services.Service, error) {
+	// TODO Remove in Mimir 2.3.
+	//      Previously ActiveSeriesCustomTrackers was an ingester config, now it's in LimitsConfig.
+	//      We provide backwards compatibility for it by parsing the old YAML location and copying it to LimitsConfig here,
+	//      unless it's also defined in the limits, which is invalid.
+	//      This needs to be set before setting default limits for unmarshalling.
+	if !t.Cfg.Ingester.ActiveSeriesCustomTrackers.Empty() {
+		if !t.Cfg.LimitsConfig.ActiveSeriesCustomTrackersConfig.Empty() {
+			return nil, fmt.Errorf("can't define active series custom trackers in both ingester and limits config, please define them only in the limits")
+		}
+		level.Warn(util_log.Logger).Log("msg", "active_series_custom_trackers is defined as an ingester config, this location is deprecated, please move it to the limits config")
+		flagext.DeprecatedFlagsUsed.Inc()
+		t.Cfg.LimitsConfig.ActiveSeriesCustomTrackersConfig = t.Cfg.Ingester.ActiveSeriesCustomTrackers
+	}
+
 	if t.Cfg.RuntimeConfig.LoadPath == "" {
 		// no need to initialize module if load path is empty
 		return nil, nil
@@ -228,6 +244,19 @@ func (t *Mimir) initRuntimeConfig() (services.Service, error) {
 
 	t.RuntimeConfig = serv
 	t.API.RegisterRuntimeConfig(runtimeConfigHandler(t.RuntimeConfig, t.Cfg.LimitsConfig))
+
+	// Update config fields using runtime config. Only if multiKV is used for given ring these returned functions will be
+	// called and register the listener.
+	//
+	// By doing the initialization here instead of per-module init function, we avoid the problem
+	// of projects based on Mimir forgetting the wiring if they override module's init method (they also don't have access to private symbols).
+	t.Cfg.Alertmanager.ShardingRing.KVStore.Multi.ConfigProvider = multiClientRuntimeConfigChannel(t.RuntimeConfig)
+	t.Cfg.Compactor.ShardingRing.KVStore.Multi.ConfigProvider = multiClientRuntimeConfigChannel(t.RuntimeConfig)
+	t.Cfg.Distributor.DistributorRing.KVStore.Multi.ConfigProvider = multiClientRuntimeConfigChannel(t.RuntimeConfig)
+	t.Cfg.Ingester.IngesterRing.KVStore.Multi.ConfigProvider = multiClientRuntimeConfigChannel(t.RuntimeConfig)
+	t.Cfg.Ruler.Ring.KVStore.Multi.ConfigProvider = multiClientRuntimeConfigChannel(t.RuntimeConfig)
+	t.Cfg.StoreGateway.ShardingRing.KVStore.Multi.ConfigProvider = multiClientRuntimeConfigChannel(t.RuntimeConfig)
+
 	return serv, err
 }
 
@@ -248,7 +277,6 @@ func (t *Mimir) initOverridesExporter() (services.Service, error) {
 }
 
 func (t *Mimir) initDistributorService() (serv services.Service, err error) {
-	t.Cfg.Distributor.DistributorRing.KVStore.Multi.ConfigProvider = multiClientRuntimeConfigChannel(t.RuntimeConfig)
 	t.Cfg.Distributor.DistributorRing.ListenPort = t.Cfg.Server.GRPCListenPort
 	t.Cfg.Distributor.ShuffleShardingLookbackPeriod = t.Cfg.Querier.ShuffleShardingIngestersLookbackPeriod
 
@@ -374,11 +402,11 @@ func (t *Mimir) initQuerier() (serv services.Service, err error) {
 		// and internal using the default instrumentation when running as a standalone service.
 		internalQuerierRouter = t.Server.HTTPServer.Handler
 	} else {
-		// Single binary mode requires a query frontend endpoint for the worker. If no frontend and scheduler endpoint
+		// Monolithic mode requires a query-frontend endpoint for the worker. If no frontend and scheduler endpoint
 		// is configured, Mimir will default to using frontend on localhost on it's own GRPC listening port.
 		if t.Cfg.Worker.FrontendAddress == "" && t.Cfg.Worker.SchedulerAddress == "" {
 			address := fmt.Sprintf("127.0.0.1:%d", t.Cfg.Server.GRPCListenPort)
-			level.Warn(util_log.Logger).Log("msg", "Worker address is empty in single binary mode.  Attempting automatic worker configuration.  If queries are unresponsive consider configuring the worker explicitly.", "address", address)
+			level.Info(util_log.Logger).Log("msg", "The querier worker has not been configured with either the query-frontend or query-scheduler address. Because Mimir is running in monolithic mode, it's attempting an automatic worker configuration. If queries are unresponsive, consider explicitly configuring the query-frontend or query-scheduler address for querier worker.", "address", address)
 			t.Cfg.Worker.FrontendAddress = address
 		}
 
@@ -432,13 +460,12 @@ func (t *Mimir) tsdbIngesterConfig() {
 }
 
 func (t *Mimir) initIngesterService() (serv services.Service, err error) {
-	t.Cfg.Ingester.IngesterRing.KVStore.Multi.ConfigProvider = multiClientRuntimeConfigChannel(t.RuntimeConfig)
 	t.Cfg.Ingester.IngesterRing.ListenPort = t.Cfg.Server.GRPCListenPort
 	t.Cfg.Ingester.StreamTypeFn = ingesterChunkStreaming(t.RuntimeConfig)
 	t.Cfg.Ingester.InstanceLimitsFn = ingesterInstanceLimits(t.RuntimeConfig)
 	t.tsdbIngesterConfig()
 
-	t.Ingester, err = ingester.New(t.Cfg.Ingester, t.Cfg.IngesterClient, t.Overrides, prometheus.DefaultRegisterer, util_log.Logger)
+	t.Ingester, err = ingester.New(t.Cfg.Ingester, t.Overrides, prometheus.DefaultRegisterer, util_log.Logger)
 	if err != nil {
 		return
 	}
@@ -521,12 +548,9 @@ func (t *Mimir) initQueryFrontend() (serv services.Service, err error) {
 }
 
 func (t *Mimir) initRulerStorage() (serv services.Service, err error) {
-	// if the ruler is not configured and we're in single binary then let's just log an error and continue.
-	// unfortunately there is no way to generate a "default" config and compare default against actual
-	// to determine if it's unconfigured.  the following check, however, correctly tests this.
-	// Single binary integration tests will break if this ever drifts
+	// If the ruler is not configured and Mimir is running in monolithic mode, then we just skip starting the ruler.
 	if t.Cfg.isModuleEnabled(All) && t.Cfg.RulerStorage.IsDefaults() {
-		level.Info(util_log.Logger).Log("msg", "Ruler storage is not configured in single binary mode and will not be started.")
+		level.Info(util_log.Logger).Log("msg", "The ruler is not being started because you need to configure the ruler storage.")
 		return
 	}
 
@@ -540,25 +564,66 @@ func (t *Mimir) initRuler() (serv services.Service, err error) {
 		return nil, nil
 	}
 
-	t.Cfg.Ruler.Ring.KVStore.Multi.ConfigProvider = multiClientRuntimeConfigChannel(t.RuntimeConfig)
 	t.Cfg.Ruler.Ring.ListenPort = t.Cfg.Server.GRPCListenPort
-	rulerRegisterer := prometheus.WrapRegistererWith(prometheus.Labels{"engine": "ruler"}, prometheus.DefaultRegisterer)
-	var queryable, federatedQueryable prom_storage.Queryable
-	// TODO: Consider wrapping logger to differentiate from querier module logger
-	queryable, _, eng := querier.New(t.Cfg.Querier, t.Overrides, t.Distributor, t.StoreQueryables, rulerRegisterer, util_log.Logger, t.ActivityTracker)
 
-	if t.Cfg.Ruler.TenantFederation.Enabled {
-		if !t.Cfg.TenantFederation.Enabled {
-			return nil, errors.New("-ruler.tenant-federation.enabled=true requires -tenant-federation.enabled=true")
+	var embeddedQueryable prom_storage.Queryable
+	var queryFunc rules.QueryFunc
+
+	if t.Cfg.Ruler.QueryFrontend.Address != "" {
+		queryFrontendClient, err := ruler.DialQueryFrontend(t.Cfg.Ruler.QueryFrontend)
+		if err != nil {
+			return nil, err
 		}
-		// Setting bypassForSingleQuerier=false forces `tenantfederation.NewQueryable` to add
-		// the `__tenant_id__` label on all metrics regardless if they're for a single tenant or multiple tenants.
-		// This makes this label more consistent and hopefully less confusing to users.
-		const bypassForSingleQuerier = false
+		remoteQuerier := ruler.NewRemoteQuerier(queryFrontendClient, t.Cfg.API.PrometheusHTTPPrefix, util_log.Logger, ruler.WithOrgIDMiddleware)
 
-		federatedQueryable = tenantfederation.NewQueryable(queryable, bypassForSingleQuerier, util_log.Logger)
+		embeddedQueryable = prom_remote.NewSampleAndChunkQueryableClient(
+			remoteQuerier,
+			labels.Labels{},
+			nil,
+			true,
+			func() (int64, error) { return 0, nil },
+		)
+		queryFunc = remoteQuerier.Query
+
+	} else {
+		var queryable, federatedQueryable prom_storage.Queryable
+
+		// TODO: Consider wrapping logger to differentiate from querier module logger
+		rulerRegisterer := prometheus.WrapRegistererWith(prometheus.Labels{"engine": "ruler"}, prometheus.DefaultRegisterer)
+
+		queryable, _, eng := querier.New(t.Cfg.Querier, t.Overrides, t.Distributor, t.StoreQueryables, rulerRegisterer, util_log.Logger, t.ActivityTracker)
+		queryable = querier.NewErrorTranslateQueryableWithFn(queryable, ruler.WrapQueryableErrors)
+
+		if t.Cfg.Ruler.TenantFederation.Enabled {
+			if !t.Cfg.TenantFederation.Enabled {
+				return nil, errors.New("-ruler.tenant-federation.enabled=true requires -tenant-federation.enabled=true")
+			}
+			// Setting bypassForSingleQuerier=false forces `tenantfederation.NewQueryable` to add
+			// the `__tenant_id__` label on all metrics regardless if they're for a single tenant or multiple tenants.
+			// This makes this label more consistent and hopefully less confusing to users.
+			const bypassForSingleQuerier = false
+
+			federatedQueryable = tenantfederation.NewQueryable(queryable, bypassForSingleQuerier, util_log.Logger)
+
+			regularQueryFunc := rules.EngineQueryFunc(eng, queryable)
+			federatedQueryFunc := rules.EngineQueryFunc(eng, federatedQueryable)
+
+			embeddedQueryable = federatedQueryable
+			queryFunc = ruler.TenantFederationQueryFunc(regularQueryFunc, federatedQueryFunc)
+
+		} else {
+			embeddedQueryable = queryable
+			queryFunc = rules.EngineQueryFunc(eng, queryable)
+		}
 	}
-	managerFactory := ruler.DefaultTenantManagerFactory(t.Cfg.Ruler, t.Distributor, queryable, federatedQueryable, eng, t.Overrides, prometheus.DefaultRegisterer)
+	managerFactory := ruler.DefaultTenantManagerFactory(
+		t.Cfg.Ruler,
+		t.Distributor,
+		embeddedQueryable,
+		queryFunc,
+		t.Overrides,
+		prometheus.DefaultRegisterer,
+	)
 
 	// We need to prefix and add a label to the metrics for the DNS resolver because, unlike other mimir components,
 	// it doesn't already have the `cortex_` prefix and the `component` label to the metrics it emits
@@ -598,7 +663,6 @@ func (t *Mimir) initRuler() (serv services.Service, err error) {
 }
 
 func (t *Mimir) initAlertManager() (serv services.Service, err error) {
-	t.Cfg.Alertmanager.ShardingRing.KVStore.Multi.ConfigProvider = multiClientRuntimeConfigChannel(t.RuntimeConfig)
 	t.Cfg.Alertmanager.ShardingRing.ListenPort = t.Cfg.Server.GRPCListenPort
 	t.Cfg.Alertmanager.CheckExternalURL(t.Cfg.API.AlertmanagerHTTPPrefix, util_log.Logger)
 
@@ -617,7 +681,6 @@ func (t *Mimir) initAlertManager() (serv services.Service, err error) {
 }
 
 func (t *Mimir) initCompactor() (serv services.Service, err error) {
-	t.Cfg.Compactor.ShardingRing.KVStore.Multi.ConfigProvider = multiClientRuntimeConfigChannel(t.RuntimeConfig)
 	t.Cfg.Compactor.ShardingRing.ListenPort = t.Cfg.Server.GRPCListenPort
 
 	t.Compactor, err = compactor.NewMultitenantCompactor(t.Cfg.Compactor, t.Cfg.BlocksStorage, t.Overrides, util_log.Logger, prometheus.DefaultRegisterer)
@@ -631,7 +694,6 @@ func (t *Mimir) initCompactor() (serv services.Service, err error) {
 }
 
 func (t *Mimir) initStoreGateway() (serv services.Service, err error) {
-	t.Cfg.StoreGateway.ShardingRing.KVStore.Multi.ConfigProvider = multiClientRuntimeConfigChannel(t.RuntimeConfig)
 	t.Cfg.StoreGateway.ShardingRing.ListenPort = t.Cfg.Server.GRPCListenPort
 
 	t.StoreGateway, err = storegateway.NewStoreGateway(t.Cfg.StoreGateway, t.Cfg.BlocksStorage, t.Overrides, t.Cfg.Server.LogLevel, util_log.Logger, prometheus.DefaultRegisterer, t.ActivityTracker)
@@ -660,7 +722,7 @@ func (t *Mimir) initMemberlistKV() (services.Service, error) {
 	)
 	dnsProvider := dns.NewProvider(util_log.Logger, dnsProviderReg, dns.GolangResolverType)
 	t.MemberlistKV = memberlist.NewKVInitService(&t.Cfg.MemberlistKV, util_log.Logger, dnsProvider, reg)
-	t.API.RegisterMemberlistKV(t.MemberlistKV)
+	t.API.RegisterMemberlistKV(t.Cfg.Server.PathPrefix, t.MemberlistKV)
 
 	// Update the config.
 	t.Cfg.Distributor.DistributorRing.KVStore.MemberlistKV = t.MemberlistKV.GetMemberlistKV

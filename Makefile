@@ -96,17 +96,24 @@ SED ?= $(shell which gsed 2>/dev/null || which sed)
 	@echo
 	@touch $@
 
+# This variable controls where result of building of multiarch image should be sent. Default is registry.
+# Other options are documented in https://docs.docker.com/engine/reference/commandline/buildx_build/#output.
+# CI workflow uses PUSH_MULTIARCH_TARGET="type=oci,dest=file.oci" to store images locally for next steps in the pipeline.
+PUSH_MULTIARCH_TARGET ?= type=registry
+
 # This target compiles mimir for linux/amd64 and linux/arm64 and then builds and pushes a multiarch image to the target repository.
-# Images are first built for each platform separately, as building both at once used to fail more often.
-push-multiarch-mimir:
-	@echo
-	$(MAKE) GOOS=linux GOARCH=amd64 BINARY_SUFFIX=_linux_amd64 cmd/mimir/mimir
-	$(SUDO) docker buildx build --platform linux/amd64 --build-arg=revision=$(GIT_REVISION) --build-arg=goproxyValue=$(GOPROXY_VALUE) --build-arg=USE_BINARY_SUFFIX=true cmd/mimir
-	$(MAKE) GOOS=linux GOARCH=arm64 BINARY_SUFFIX=_linux_arm64 cmd/mimir/mimir
-	$(SUDO) docker buildx build --platform linux/arm64 --build-arg=revision=$(GIT_REVISION) --build-arg=goproxyValue=$(GOPROXY_VALUE) --build-arg=USE_BINARY_SUFFIX=true cmd/mimir
-	# This command will run the same build as above, but it will reuse existing platform-specific images,
-	# put them together and push to registry.
-	$(SUDO) docker buildx build -o type=registry --platform linux/amd64,linux/arm64 --build-arg=revision=$(GIT_REVISION) --build-arg=goproxyValue=$(GOPROXY_VALUE) --build-arg=USE_BINARY_SUFFIX=true -t $(IMAGE_PREFIX)mimir:$(IMAGE_TAG) cmd/mimir
+# We don't do separate building of single-platform and multiplatform images here (as we do for push-multiarch-build-image), as
+# these Dockerfiles are not doing much, and are unlikely to fail.
+push-multiarch-%/$(UPTODATE):
+	$(eval DIR := $(patsubst push-multiarch-%/$(UPTODATE),%,$@))
+
+	if [ -f $(DIR)/main.go ]; then \
+		$(MAKE) GOOS=linux GOARCH=amd64 BINARY_SUFFIX=_linux_amd64 $(DIR)/$(shell basename $(DIR)); \
+		$(MAKE) GOOS=linux GOARCH=arm64 BINARY_SUFFIX=_linux_arm64 $(DIR)/$(shell basename $(DIR)); \
+	fi
+	$(SUDO) docker buildx build -o $(PUSH_MULTIARCH_TARGET) --platform linux/amd64,linux/arm64 --build-arg=revision=$(GIT_REVISION) --build-arg=goproxyValue=$(GOPROXY_VALUE) --build-arg=USE_BINARY_SUFFIX=true -t $(IMAGE_PREFIX)$(shell basename $(DIR)):$(IMAGE_TAG) $(DIR)/
+
+push-multiarch-mimir: push-multiarch-cmd/mimir/.uptodate
 
 # This target fetches current build image, and tags it with "latest" tag. It can be used instead of building the image locally.
 .PHONY: fetch-build-image
@@ -120,8 +127,8 @@ fetch-build-image:
 push-multiarch-build-image:
 	@echo
 	# Build image for each platform separately... it tends to generate fewer errors.
-	$(SUDO) docker buildx build --platform linux/amd64 --build-arg=revision=$(GIT_REVISION) --build-arg=goproxyValue=$(GOPROXY_VALUE) mimir-build-image/
-	$(SUDO) docker buildx build --platform linux/arm64 --build-arg=revision=$(GIT_REVISION) --build-arg=goproxyValue=$(GOPROXY_VALUE) mimir-build-image/
+	$(SUDO) docker buildx build --platform linux/amd64 --progress=plain --build-arg=revision=$(GIT_REVISION) --build-arg=goproxyValue=$(GOPROXY_VALUE) mimir-build-image/
+	$(SUDO) docker buildx build --platform linux/arm64 --progress=plain --build-arg=revision=$(GIT_REVISION) --build-arg=goproxyValue=$(GOPROXY_VALUE) mimir-build-image/
 	# This command will run the same build as above, but it will reuse existing platform-specific images,
 	# put them together and push to registry.
 	$(SUDO) docker buildx build -o type=registry --platform linux/amd64,linux/arm64 --build-arg=revision=$(GIT_REVISION) --build-arg=goproxyValue=$(GOPROXY_VALUE) -t $(BUILD_IMAGE):$(IMAGE_TAG) mimir-build-image/
@@ -130,7 +137,10 @@ push-multiarch-build-image:
 # 'make: Entering directory '/go/src/github.com/grafana/mimir' phase.
 DONT_FIND := -name vendor -prune -o -name .git -prune -o -name .cache -prune -o -name .pkg -prune -o -name mimir-mixin-tools -prune -o -name trafficdump -prune -o
 
-MAKEFILES = $(shell find . $(DONT_FIND) \( -name 'Makefile' -o -name '*.mk' \) -print)
+# MAKE_FILES is a list of make files to lint.
+# We purposefully avoid MAKEFILES as a variable name as it influences
+# the files included in recursive invocations of make
+MAKE_FILES = $(shell find . $(DONT_FIND) \( -name 'Makefile' -o -name '*.mk' \) -print)
 
 # Get a list of directories containing Dockerfiles
 DOCKERFILES := $(shell find . $(DONT_FIND) -type f -name 'Dockerfile' -print)
@@ -183,8 +193,8 @@ mimir-build-image/$(UPTODATE): mimir-build-image/*
 
 # All the boiler plate for building golang follows:
 SUDO := $(shell docker info >/dev/null 2>&1 || echo "sudo -E")
-BUILD_IN_CONTAINER := true
-LATEST_BUILD_IMAGE_TAG ?= update-go-1.17.8-8a996bb57
+BUILD_IN_CONTAINER ?= true
+LATEST_BUILD_IMAGE_TAG ?= update-build-image-and-github-workflow-89d9d61b4
 
 # TTY is parameterized to allow Google Cloud Builder to run builds,
 # as it currently disallows TTY devices. This value needs to be overridden
@@ -207,7 +217,7 @@ GOVOLUMES=	-v $(shell pwd)/.cache:/go/cache:delegated,z \
 # Mount local ssh credentials to be able to clone private repos when doing `mod-check`
 SSHVOLUME=  -v ~/.ssh/:/root/.ssh:delegated,z
 
-exes $(EXES) protos $(PROTO_GOS) lint test test-with-race cover shell mod-check check-protos doc format dist: fetch-build-image
+exes $(EXES) protos $(PROTO_GOS) lint test test-with-race cover shell mod-check check-protos doc format dist build-mixin format-mixin check-mixin-tests license check-license: fetch-build-image
 	@mkdir -p $(shell pwd)/.pkg
 	@mkdir -p $(shell pwd)/.cache
 	@echo
@@ -238,6 +248,7 @@ lint: check-makefiles
 	GOFLAGS="-tags=requires_docker" faillint -paths "github.com/bmizerany/assert=github.com/stretchr/testify/assert,\
 		golang.org/x/net/context=context,\
 		sync/atomic=go.uber.org/atomic,\
+		regexp=github.com/grafana/regexp,\
 		github.com/go-kit/kit/log/...=github.com/go-kit/log,\
 		github.com/prometheus/client_golang/prometheus.{MultiError}=github.com/prometheus/prometheus/tsdb/errors.{NewMulti},\
 		github.com/weaveworks/common/user.{ExtractOrgID}=github.com/grafana/mimir/pkg/tenant.{TenantID,TenantIDs},\
@@ -331,7 +342,7 @@ doc: clean-doc $(DOC_TEMPLATES:.template=.md) $(DOC_EMBED:.md=.md.embedmd)
 
 # Add license header to files.
 license:
-	go run ./tools/add-license ./cmd ./integration ./pkg ./tools ./development ./mimir-build-image
+	go run ./tools/add-license ./cmd ./integration ./pkg ./tools ./development ./mimir-build-image ./operations ./.github
 
 check-license: license
 	@git diff --exit-code || (echo "Please add the license header running 'make BUILD_IN_CONTAINER=false license'" && false)
@@ -369,20 +380,36 @@ dist: ## Generates binaries for a Mimir release.
 		done; \
 		touch $@
 
+build-mixin: check-mixin-jb
+	@rm -rf $(MIXIN_OUT_PATH) && mkdir $(MIXIN_OUT_PATH)
+	@mixtool generate all --output-alerts $(MIXIN_OUT_PATH)/alerts.yaml --output-rules $(MIXIN_OUT_PATH)/rules.yaml --directory $(MIXIN_OUT_PATH)/dashboards ${MIXIN_PATH}/mixin-compiled.libsonnet
+	@./tools/check-rules.sh $(MIXIN_OUT_PATH)/rules.yaml 20 # If any rule group has more than 20 rules, fail. 20 is our default per-tenant limit in the ruler.
+	@cd $(MIXIN_OUT_PATH)/.. && zip -q -r mimir-mixin.zip $$(basename "$(MIXIN_OUT_PATH)")
+	@echo "The mixin has been compiled to $(MIXIN_OUT_PATH) and archived to $$(realpath --relative-to=$$(pwd) $(MIXIN_OUT_PATH)/../mimir-mixin.zip)"
+
+check-mixin-tests:
+	@./operations/mimir-mixin-tests/run.sh || (echo "Mixin tests are failing. Please fix the reported issues. You can run mixin tests with 'make check-mixin-tests'" && false)
+
+format-mixin:
+	@find $(MIXIN_PATH) -type f -name '*.libsonnet' | xargs jsonnetfmt -i
+
 endif
 
 .PHONY: check-makefiles
 check-makefiles: format-makefiles
-	@git diff --exit-code -- $(MAKEFILES) || (echo "Please format Makefiles by running 'make format-makefiles'" && false)
+	@git diff --exit-code -- $(MAKE_FILES) || (echo "Please format Makefiles by running 'make format-makefiles'" && false)
 
 .PHONY: format-makefiles
 format-makefiles: ## Format all Makefiles.
-format-makefiles: $(MAKEFILES)
+format-makefiles: $(MAKE_FILES)
 	$(SED) -i -e 's/^\(\t*\)  /\1\t/g' -e 's/^\(\t*\) /\1/' -- $?
 
 clean:
 	$(SUDO) docker rmi $(IMAGE_NAMES) >/dev/null 2>&1 || true
 	rm -rf -- $(UPTODATE_FILES) $(EXES) .cache dist
+	# Remove executables built for multiarch images.
+	find . -type f -name '*_linux_arm64' -perm +u+x -exec rm {} \;
+	find . -type f -name '*_linux_amd64' -perm +u+x -exec rm {} \;
 	go clean ./...
 
 clean-protos:
@@ -391,34 +418,6 @@ clean-protos:
 # List all images building make targets.
 list-image-targets:
 	@echo $(UPTODATE_FILES) | tr " " "\n"
-
-save-images:
-	@mkdir -p docker-images
-	for image_name in $(IMAGE_NAMES); do \
-		if echo $$image_name | grep -q build; then \
-			continue; \
-		fi; \
-		if [ "$$(docker images -q $$image_name:$(IMAGE_TAG) 2> /dev/null)" = "" ]; then \
-			echo "Skipping $$image_name:$(IMAGE_TAG) because image does not exist"; \
-		else \
-			echo "Saving $$image_name:$(IMAGE_TAG)"; \
-			docker save $$image_name:$(IMAGE_TAG) -o docker-images/$$(echo $$image_name | tr "/" _):$(IMAGE_TAG); \
-		fi; \
-	done
-
-load-images:
-	for image_name in $(IMAGE_NAMES); do \
-		if echo $$image_name | grep -q build; then \
-			continue; \
-		fi; \
-		image_path=docker-images/$$(echo $$image_name | tr "/" _):$(IMAGE_TAG); \
-		if [ -e "$$image_path" ]; then \
-			echo "Loading $$image_path"; \
-			docker load -i "$$image_path"; \
-		else \
-			echo "Skipping $$image_path because image does not exist"; \
-		fi; \
-	done
 
 clean-doc:
 	rm -f $(DOC_TEMPLATES:.template=.md)
@@ -443,9 +442,9 @@ clean-white-noise:
 check-white-noise: clean-white-noise
 	@git diff --exit-code -- '*.md' || (echo "Please remove trailing whitespaces running 'make clean-white-noise'" && false)
 
-check-mixin: format-mixin check-mixin-jb check-mixin-mixtool check-mixin-playbook
+check-mixin: build-mixin format-mixin check-mixin-jb check-mixin-mixtool check-mixin-playbook
 	@echo "Checking diff:"
-	@git diff --exit-code -- $(MIXIN_PATH) || (echo "Please build and format mixin by running 'make build-mixin format-mixin'" && false)
+	@git diff --exit-code -- $(MIXIN_PATH) $(MIXIN_OUT_PATH) || (echo "Please build and format mixin by running 'make build-mixin format-mixin'" && false)
 
 	@cd $(MIXIN_PATH) && \
 	jb install && \
@@ -461,15 +460,6 @@ check-mixin-mixtool: check-mixin-jb
 
 check-mixin-playbook: build-mixin
 	@$(MIXIN_PATH)/scripts/lint-playbooks.sh
-
-build-mixin: check-mixin-jb
-	@rm -rf $(MIXIN_OUT_PATH) && mkdir $(MIXIN_OUT_PATH)
-	@mixtool generate all --output-alerts $(MIXIN_OUT_PATH)/alerts.yaml --output-rules $(MIXIN_OUT_PATH)/rules.yaml --directory $(MIXIN_OUT_PATH)/dashboards ${MIXIN_PATH}/mixin-compiled.libsonnet
-	@cd $(MIXIN_OUT_PATH)/.. && zip -q -r mimir-mixin.zip $$(basename "$(MIXIN_OUT_PATH)")
-	@echo "The mixin has been compiled to $(MIXIN_OUT_PATH) and archived to $$(realpath --relative-to=$$(pwd) $(MIXIN_OUT_PATH)/../mimir-mixin.zip)"
-
-format-mixin:
-	@find $(MIXIN_PATH) -type f -name '*.libsonnet' -print -o -name '*.jsonnet' -print | xargs jsonnetfmt -i
 
 mixin-serve: ## Runs Grafana (listening on port 3000) loading the mixin dashboards compiled at operations/mimir-mixin-compiled.
 	@./operations/mimir-mixin-tools/serve/run.sh

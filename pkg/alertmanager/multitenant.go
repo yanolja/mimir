@@ -58,7 +58,6 @@ const (
 var (
 	errEmptyExternalURL                    = errors.New("-alertmanager.web.external-url cannot be empty")
 	errInvalidExternalURL                  = errors.New("the configured external URL is invalid: should not end with /")
-	errShardingUnsupportedStorage          = errors.New("the configured alertmanager storage backend is not supported when sharding is enabled")
 	errZoneAwarenessEnabledWithoutZoneInfo = errors.New("the configured alertmanager has zone awareness enabled but zone is not set")
 	errNotUploadingFallback                = errors.New("not uploading fallback configuration")
 )
@@ -96,7 +95,7 @@ const (
 // RegisterFlags adds the flags required to config this to the given FlagSet.
 func (cfg *MultitenantAlertmanagerConfig) RegisterFlags(f *flag.FlagSet, logger log.Logger) {
 	f.StringVar(&cfg.DataDir, "alertmanager.storage.path", "./data-alertmanager/", "Directory to store Alertmanager state and temporarily configuration files. The content of this directory is not required to be persisted between restarts unless Alertmanager replication has been disabled.")
-	f.DurationVar(&cfg.Retention, "alertmanager.storage.retention", 5*24*time.Hour, "How long to keep data for.")
+	f.DurationVar(&cfg.Retention, "alertmanager.storage.retention", 5*24*time.Hour, "How long should we store stateful data (notification logs and silences). For notification log entries, refers to how long should we keep entries before they expire and are deleted. For silences, refers to how long should tenants view silences after they expire and are deleted.")
 	f.Int64Var(&cfg.MaxRecvMsgSize, "alertmanager.max-recv-msg-size", 100<<20, "Maximum size (bytes) of an accepted HTTP request body.")
 
 	_ = cfg.ExternalURL.Set("http://localhost:8080/alertmanager") // set the default
@@ -129,9 +128,6 @@ func (cfg *MultitenantAlertmanagerConfig) Validate(storageCfg alertstore.Config)
 		return err
 	}
 
-	if !storageCfg.IsFullStateSupported() {
-		return errShardingUnsupportedStorage
-	}
 	if cfg.ShardingRing.ZoneAwarenessEnabled && cfg.ShardingRing.InstanceZone == "" {
 		return errZoneAwarenessEnabledWithoutZoneInfo
 	}
@@ -1260,6 +1256,15 @@ func safeTemplateFilepath(dir, templateName string) (string, error) {
 	actualPath, err := filepath.Abs(filepath.Join(containerDir, templateName))
 	if err != nil {
 		return "", err
+	}
+
+	// If actualPath is same as containerDir, it's likely that actualPath was empty, or just ".".
+	if containerDir == actualPath {
+		return "", fmt.Errorf("invalid template name %q", templateName)
+	}
+
+	if !strings.HasSuffix(containerDir, string(os.PathSeparator)) {
+		containerDir = containerDir + string(os.PathSeparator)
 	}
 
 	// Ensure the actual path of the template is within the expected directory.

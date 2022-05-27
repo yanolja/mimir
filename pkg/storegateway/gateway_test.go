@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
+	"github.com/grafana/dskit/backoff"
 	"github.com/grafana/dskit/flagext"
 	"github.com/grafana/dskit/kv/consul"
 	"github.com/grafana/dskit/ring"
@@ -31,6 +32,7 @@ import (
 	"github.com/oklog/ulid"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
@@ -751,6 +753,187 @@ func TestStoreGateway_SyncOnRingTopologyChanged(t *testing.T) {
 	}
 }
 
+func TestStoreGateway_SyncShouldKeepPreviousBlocksIfInstanceIsUnhealthyInTheRing(t *testing.T) {
+	test.VerifyNoLeak(t)
+
+	const (
+		instanceID   = "instance-1"
+		instanceAddr = "127.0.0.1"
+		userID       = "user-1"
+		metricName   = "series_1"
+	)
+
+	ctx := context.Background()
+	gatewayCfg := mockGatewayConfig()
+	gatewayCfg.ShardingRing.InstanceID = instanceID
+	gatewayCfg.ShardingRing.InstanceAddr = instanceAddr
+	gatewayCfg.ShardingRing.RingCheckPeriod = time.Hour // Do not trigger the sync each time the ring changes (we want to control it in this test).
+
+	storageCfg := mockStorageConfig(t)
+	storageCfg.BucketStore.SyncInterval = time.Hour // Do not trigger the periodic sync (we want to control it in this test).
+
+	reg := prometheus.NewPedanticRegistry()
+	ringStore, closer := consul.NewInMemoryClient(ring.GetCodec(), log.NewNopLogger(), nil)
+	t.Cleanup(func() { assert.NoError(t, closer.Close()) })
+
+	storageDir := t.TempDir()
+
+	// Generate a real TSDB block in the storage.
+	bucket, err := filesystem.NewBucketClient(filesystem.Config{Directory: storageDir})
+	require.NoError(t, err)
+	generateStorageBlock(t, storageDir, userID, metricName, 10, 100, 15)
+
+	g, err := newStoreGateway(gatewayCfg, storageCfg, bucket, ringStore, defaultLimitsOverrides(t), mockLoggingLevel(), log.NewNopLogger(), reg, nil)
+	require.NoError(t, err)
+
+	// No sync retries to speed up tests.
+	g.stores.syncBackoffConfig = backoff.Config{MaxRetries: 1}
+
+	// Start the store-gateway.
+	require.NoError(t, services.StartAndAwaitRunning(ctx, g))
+	t.Cleanup(func() { assert.NoError(t, services.StopAndAwaitTerminated(ctx, g)) })
+
+	t.Run("store-gateway is healthy in the ring", func(t *testing.T) {
+		g.syncStores(ctx, syncReasonPeriodic)
+
+		// Run query and ensure the block is queried.
+		req := &storepb.SeriesRequest{MinTime: math.MinInt64, MaxTime: math.MaxInt64}
+		srv := newBucketStoreSeriesServer(setUserIDToGRPCContext(ctx, userID))
+		require.NoError(t, g.Series(req, srv))
+		assert.Len(t, srv.Hints.QueriedBlocks, 1)
+
+		assert.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(`
+			# HELP cortex_bucket_store_blocks_loaded Number of currently loaded blocks.
+			# TYPE cortex_bucket_store_blocks_loaded gauge
+			cortex_bucket_store_blocks_loaded{component="store-gateway"} 1
+
+			# HELP cortex_bucket_store_block_loads_total Total number of remote block loading attempts.
+			# TYPE cortex_bucket_store_block_loads_total counter
+			cortex_bucket_store_block_loads_total{component="store-gateway"} 1
+
+			# HELP cortex_bucket_store_block_load_failures_total Total number of failed remote block loading attempts.
+			# TYPE cortex_bucket_store_block_load_failures_total counter
+			cortex_bucket_store_block_load_failures_total{component="store-gateway"} 0
+		`),
+			"cortex_bucket_store_blocks_loaded",
+			"cortex_bucket_store_block_loads_total",
+			"cortex_bucket_store_block_load_failures_total",
+		))
+	})
+
+	t.Run("store-gateway is unhealthy in the ring", func(t *testing.T) {
+		// Change heartbeat timestamp in the ring to make it unhealthy.
+		require.NoError(t, ringStore.CAS(ctx, RingKey, func(in interface{}) (interface{}, bool, error) {
+			ringDesc := ring.GetOrCreateRingDesc(in)
+			instance := ringDesc.Ingesters[instanceID]
+			instance.Timestamp = time.Now().Add(-time.Hour).Unix()
+			ringDesc.Ingesters[instanceID] = instance
+			return ringDesc, true, nil
+		}))
+
+		// Wait until the ring client has received the update.
+		// We expect the set of healthy instances to be empty.
+		dstest.Poll(t, 5*time.Second, true, func() interface{} {
+			actual, err := g.ring.GetAllHealthy(BlocksOwnerSync)
+			return err == nil && len(actual.Instances) == 0
+		})
+
+		g.syncStores(ctx, syncReasonPeriodic)
+
+		// Run query and ensure the block is queried.
+		req := &storepb.SeriesRequest{MinTime: math.MinInt64, MaxTime: math.MaxInt64}
+		srv := newBucketStoreSeriesServer(setUserIDToGRPCContext(ctx, userID))
+		require.NoError(t, g.Series(req, srv))
+		assert.Len(t, srv.Hints.QueriedBlocks, 1)
+
+		assert.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(`
+			# HELP cortex_bucket_store_blocks_loaded Number of currently loaded blocks.
+			# TYPE cortex_bucket_store_blocks_loaded gauge
+			cortex_bucket_store_blocks_loaded{component="store-gateway"} 1
+
+			# HELP cortex_bucket_store_block_loads_total Total number of remote block loading attempts.
+			# TYPE cortex_bucket_store_block_loads_total counter
+			cortex_bucket_store_block_loads_total{component="store-gateway"} 1
+		`),
+			"cortex_bucket_store_blocks_loaded",
+			"cortex_bucket_store_block_loads_total",
+		))
+	})
+
+	t.Run("store-gateway is missing in the ring (e.g. removed from another instance because of the auto-forget feature)", func(t *testing.T) {
+		// Remove the instance from the ring.
+		require.NoError(t, ringStore.CAS(ctx, RingKey, func(in interface{}) (interface{}, bool, error) {
+			ringDesc := ring.GetOrCreateRingDesc(in)
+			delete(ringDesc.Ingesters, instanceID)
+			return ringDesc, true, nil
+		}))
+
+		// Wait until the ring client has received the update.
+		// We expect the ring to be empty.
+		dstest.Poll(t, 5*time.Second, ring.ErrEmptyRing, func() interface{} {
+			_, err := g.ring.GetAllHealthy(BlocksOwnerSync)
+			return err
+		})
+
+		g.syncStores(ctx, syncReasonPeriodic)
+
+		// Run query and ensure the block is queried.
+		req := &storepb.SeriesRequest{MinTime: math.MinInt64, MaxTime: math.MaxInt64}
+		srv := newBucketStoreSeriesServer(setUserIDToGRPCContext(ctx, userID))
+		require.NoError(t, g.Series(req, srv))
+		assert.Len(t, srv.Hints.QueriedBlocks, 1)
+
+		assert.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(`
+			# HELP cortex_bucket_store_blocks_loaded Number of currently loaded blocks.
+			# TYPE cortex_bucket_store_blocks_loaded gauge
+			cortex_bucket_store_blocks_loaded{component="store-gateway"} 1
+
+			# HELP cortex_bucket_store_block_loads_total Total number of remote block loading attempts.
+			# TYPE cortex_bucket_store_block_loads_total counter
+			cortex_bucket_store_block_loads_total{component="store-gateway"} 1
+		`),
+			"cortex_bucket_store_blocks_loaded",
+			"cortex_bucket_store_block_loads_total",
+		))
+	})
+
+	t.Run("store-gateway is re-registered to the ring and it's healthy", func(t *testing.T) {
+		// Re-register the instance to the ring.
+		require.NoError(t, ringStore.CAS(ctx, RingKey, func(in interface{}) (interface{}, bool, error) {
+			ringDesc := ring.GetOrCreateRingDesc(in)
+			ringDesc.AddIngester(instanceID, instanceAddr, "", ring.Tokens{1, 2, 3}, ring.ACTIVE, time.Now())
+			return ringDesc, true, nil
+		}))
+
+		// Wait until the ring client has received the update.
+		dstest.Poll(t, 5*time.Second, true, func() interface{} {
+			actual, err := g.ring.GetAllHealthy(BlocksOwnerSync)
+			return err == nil && actual.Includes(instanceAddr)
+		})
+
+		g.syncStores(ctx, syncReasonPeriodic)
+
+		// Run query and ensure the block is queried.
+		req := &storepb.SeriesRequest{MinTime: math.MinInt64, MaxTime: math.MaxInt64}
+		srv := newBucketStoreSeriesServer(setUserIDToGRPCContext(ctx, userID))
+		require.NoError(t, g.Series(req, srv))
+		assert.Len(t, srv.Hints.QueriedBlocks, 1)
+
+		assert.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(`
+			# HELP cortex_bucket_store_blocks_loaded Number of currently loaded blocks.
+			# TYPE cortex_bucket_store_blocks_loaded gauge
+			cortex_bucket_store_blocks_loaded{component="store-gateway"} 1
+
+			# HELP cortex_bucket_store_block_loads_total Total number of remote block loading attempts.
+			# TYPE cortex_bucket_store_block_loads_total counter
+			cortex_bucket_store_block_loads_total{component="store-gateway"} 1
+		`),
+			"cortex_bucket_store_blocks_loaded",
+			"cortex_bucket_store_block_loads_total",
+		))
+	})
+}
+
 func TestStoreGateway_RingLifecyclerShouldAutoForgetUnhealthyInstances(t *testing.T) {
 	test.VerifyNoLeak(t)
 
@@ -805,9 +988,7 @@ func TestStoreGateway_SeriesQueryingShouldRemoveExternalLabels(t *testing.T) {
 	logger := log.NewNopLogger()
 	userID := "user-1"
 
-	storageDir, err := ioutil.TempDir(os.TempDir(), "")
-	require.NoError(t, err)
-	t.Cleanup(func() { assert.NoError(t, os.RemoveAll(storageDir)) })
+	storageDir := t.TempDir()
 
 	// Generate 2 TSDB blocks with the same exact series (and data points).
 	numSeries := 2
@@ -1125,9 +1306,7 @@ func TestStoreGateway_SeriesQueryingShouldEnforceMaxChunksPerQueryLimit(t *testi
 	logger := log.NewNopLogger()
 	userID := "user-1"
 
-	storageDir, err := ioutil.TempDir(os.TempDir(), "")
-	require.NoError(t, err)
-	t.Cleanup(func() { assert.NoError(t, os.RemoveAll(storageDir)) })
+	storageDir := t.TempDir()
 
 	// Generate 1 TSDB block with chunksQueried series. Since each mocked series contains only 1 sample,
 	// it will also only have 1 chunk.
@@ -1203,17 +1382,14 @@ func mockGatewayConfig() Config {
 }
 
 func mockStorageConfig(t *testing.T) mimir_tsdb.BlocksStorageConfig {
-	tmpDir, err := ioutil.TempDir(os.TempDir(), "store-gateway-test-*")
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, os.RemoveAll(tmpDir))
-	})
+	tmpDir := t.TempDir()
 
 	cfg := mimir_tsdb.BlocksStorageConfig{}
 	flagext.DefaultValues(&cfg)
 
 	cfg.BucketStore.ConsistencyDelay = 0
 	cfg.BucketStore.BucketIndex.Enabled = false // mocks used in tests don't expect index reads
+	cfg.BucketStore.IgnoreBlocksWithin = 0
 	cfg.BucketStore.SyncDir = tmpDir
 
 	return cfg
@@ -1226,9 +1402,7 @@ func mockStorageConfig(t *testing.T) mimir_tsdb.BlocksStorageConfig {
 func mockTSDB(t *testing.T, dir string, numSeries, numBlocks int, minT, maxT int64) {
 	// Create a new TSDB on a temporary directory. The blocks
 	// will be then snapshotted to the input dir.
-	tempDir, err := ioutil.TempDir(os.TempDir(), "tsdb")
-	require.NoError(t, err)
-	t.Cleanup(func() { assert.NoError(t, os.RemoveAll(tempDir)) })
+	tempDir := t.TempDir()
 
 	db, err := tsdb.Open(tempDir, nil, nil, &tsdb.Options{
 		MinBlockDuration:  2 * time.Hour.Milliseconds(),
@@ -1270,9 +1444,7 @@ func mockTSDB(t *testing.T, dir string, numSeries, numBlocks int, minT, maxT int
 func mockTSDBWithGenerator(t *testing.T, dir string, next func() (bool, labels.Labels, int64, float64)) {
 	// Create a new TSDB on a temporary directory. The blocks
 	// will be then snapshotted to the input dir.
-	tempDir, err := ioutil.TempDir(os.TempDir(), "tsdb")
-	require.NoError(t, err)
-	t.Cleanup(func() { assert.NoError(t, os.RemoveAll(tempDir)) })
+	tempDir := t.TempDir()
 
 	db, err := tsdb.Open(tempDir, nil, nil, &tsdb.Options{
 		MinBlockDuration:  2 * time.Hour.Milliseconds(),
@@ -1371,9 +1543,9 @@ type mockShardingStrategy struct {
 	mock.Mock
 }
 
-func (m *mockShardingStrategy) FilterUsers(ctx context.Context, userIDs []string) []string {
+func (m *mockShardingStrategy) FilterUsers(ctx context.Context, userIDs []string) ([]string, error) {
 	args := m.Called(ctx, userIDs)
-	return args.Get(0).([]string)
+	return args.Get(0).([]string), args.Error(1)
 }
 
 func (m *mockShardingStrategy) FilterBlocks(ctx context.Context, userID string, metas map[ulid.ULID]*metadata.Meta, loaded map[ulid.ULID]struct{}, synced *extprom.TxGaugeVec) error {
