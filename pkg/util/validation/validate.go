@@ -24,16 +24,6 @@ import (
 const (
 	discardReasonLabel = "reason"
 
-	// ErrQueryTooLong is used in chunk store, querier and query frontend.
-	ErrQueryTooLong = "the query time range exceeds the limit (query length: %s, limit: %s)"
-
-	// RateLimited is one of the values for the reason to discard samples.
-	// Declared here to avoid duplication in ingester and distributor.
-	RateLimited = "rate_limited"
-
-	// Too many HA clusters is one of the reasons for discarding samples.
-	TooManyHAClusters = "too_many_ha_clusters"
-
 	// The combined length of the label names and values of an Exemplar's LabelSet MUST NOT exceed 128 UTF-8 characters
 	// https://github.com/OpenObservability/OpenMetrics/blob/main/specification/OpenMetrics.md#exemplars
 	ExemplarMaxLabelSetLength = 128
@@ -62,11 +52,27 @@ var (
 	reasonMetadataMetricNameTooLong = metricReasonFromErrorID(globalerror.MetricMetadataMetricNameTooLong)
 	reasonMetadataHelpTooLong       = metricReasonFromErrorID(globalerror.MetricMetadataHelpTooLong)
 	reasonMetadataUnitTooLong       = metricReasonFromErrorID(globalerror.MetricMetadataUnitTooLong)
+
+	// ReasonRateLimited is one of the values for the reason to discard samples.
+	// Declared here to avoid duplication in ingester and distributor.
+	ReasonRateLimited = "rate_limited" // same for request and ingestion which are separate errors, so not using metricReasonFromErrorID with global error
+
+	// ReasonTooManyHAClusters is one of the reasons for discarding samples.
+	ReasonTooManyHAClusters = "too_many_ha_clusters"
 )
 
 func metricReasonFromErrorID(id globalerror.ID) string {
 	return strings.ReplaceAll(string(id), "-", "_")
 }
+
+// DiscardedRequests is a metric of the number of discarded requests.
+var DiscardedRequests = prometheus.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "cortex_discarded_requests_total",
+		Help: "The total number of requests that were discarded due to rate limiting.",
+	},
+	[]string{discardReasonLabel, "user"},
+)
 
 // DiscardedSamples is a metric of the number of discarded samples, by reason.
 var DiscardedSamples = prometheus.NewCounterVec(
@@ -272,6 +278,9 @@ func ValidateMetadata(cfg MetadataValidationConfig, userID string, metadata *mim
 func DeletePerUserValidationMetrics(userID string, log log.Logger) {
 	filter := map[string]string{"user": userID}
 
+	if err := util.DeleteMatchingLabels(DiscardedRequests, filter); err != nil {
+		level.Warn(log).Log("msg", "failed to remove cortex_discarded_requests_total metric for user", "user", userID, "err", err)
+	}
 	if err := util.DeleteMatchingLabels(DiscardedSamples, filter); err != nil {
 		level.Warn(log).Log("msg", "failed to remove cortex_discarded_samples_total metric for user", "user", userID, "err", err)
 	}

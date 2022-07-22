@@ -17,7 +17,6 @@ package tsdb
 import (
 	"encoding/json"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sort"
@@ -41,8 +40,8 @@ import (
 // IndexWriter serializes the index for a block of series data.
 // The methods must be called in the order they are specified in.
 type IndexWriter interface {
-	// AddSymbols registers all string symbols that are encountered in series
-	// and other indices. Symbols must be added in sorted order.
+	// AddSymbol registers a single symbol.
+	// Symbols must be registered in sorted order.
 	AddSymbol(sym string) error
 
 	// AddSeries populates the index writer with a series and its offsets
@@ -128,7 +127,7 @@ type ChunkWriter interface {
 // ChunkReader provides reading access of serialized time series data.
 type ChunkReader interface {
 	// Chunk returns the series data chunk with the given reference.
-	Chunk(ref chunks.ChunkRef) (chunkenc.Chunk, error)
+	Chunk(ref chunks.Meta) (chunkenc.Chunk, error)
 
 	// Close releases all underlying resources of the reader.
 	Close() error
@@ -170,6 +169,9 @@ type BlockMeta struct {
 
 	// Version of the index format.
 	Version int `json:"version"`
+
+	// OutOfOrder is true if the block was directly created from out-of-order samples.
+	OutOfOrder bool `json:"out_of_order"`
 }
 
 // BlockStats contains stats about contents of a block.
@@ -212,7 +214,7 @@ const (
 func chunkDir(dir string) string { return filepath.Join(dir, "chunks") }
 
 func readMetaFile(dir string) (*BlockMeta, int64, error) {
-	b, err := ioutil.ReadFile(filepath.Join(dir, metaFilename))
+	b, err := os.ReadFile(filepath.Join(dir, metaFilename))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -662,7 +664,7 @@ func (pb *Block) Snapshot(dir string) error {
 
 	// Hardlink the chunks
 	curChunkDir := chunkDir(pb.dir)
-	files, err := ioutil.ReadDir(curChunkDir)
+	files, err := os.ReadDir(curChunkDir)
 	if err != nil {
 		return errors.Wrap(err, "ReadDir the current chunk dir")
 	}

@@ -11,11 +11,13 @@ import (
 
 	"github.com/go-kit/log"
 	"github.com/gogo/protobuf/proto"
+	"github.com/gogo/status"
 	"github.com/golang/snappy"
 	"github.com/prometheus/prometheus/prompb"
 	"github.com/stretchr/testify/require"
 	"github.com/weaveworks/common/httpgrpc"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 )
 
 type mockHTTPGRPCClient func(ctx context.Context, req *httpgrpc.HTTPRequest, _ ...grpc.CallOption) (*httpgrpc.HTTPResponse, error)
@@ -44,7 +46,7 @@ func TestRemoteQuerier_ReadReq(t *testing.T) {
 			Body: snappy.Encode(nil, b),
 		}, nil
 	}
-	q := NewRemoteQuerier(mockHTTPGRPCClient(mockClientFn), "/prometheus", log.NewNopLogger())
+	q := NewRemoteQuerier(mockHTTPGRPCClient(mockClientFn), time.Minute, "/prometheus", log.NewNopLogger())
 
 	_, err := q.Read(context.Background(), &prompb.Query{})
 	require.NoError(t, err)
@@ -55,6 +57,17 @@ func TestRemoteQuerier_ReadReq(t *testing.T) {
 	require.Equal(t, "/prometheus/api/v1/read", inReq.Url)
 }
 
+func TestRemoteQuerier_ReadReqTimeout(t *testing.T) {
+	mockClientFn := func(ctx context.Context, req *httpgrpc.HTTPRequest, _ ...grpc.CallOption) (*httpgrpc.HTTPResponse, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	q := NewRemoteQuerier(mockHTTPGRPCClient(mockClientFn), time.Second, "/prometheus", log.NewNopLogger())
+
+	_, err := q.Read(context.Background(), &prompb.Query{})
+	require.Error(t, err)
+}
+
 func TestRemoteQuerier_QueryReq(t *testing.T) {
 	var inReq *httpgrpc.HTTPRequest
 	mockClientFn := func(ctx context.Context, req *httpgrpc.HTTPRequest, _ ...grpc.CallOption) (*httpgrpc.HTTPResponse, error) {
@@ -63,7 +76,7 @@ func TestRemoteQuerier_QueryReq(t *testing.T) {
 							"status": "success","data": {"resultType":"vector","result":[]}
 						}`)}, nil
 	}
-	q := NewRemoteQuerier(mockHTTPGRPCClient(mockClientFn), "/prometheus", log.NewNopLogger())
+	q := NewRemoteQuerier(mockHTTPGRPCClient(mockClientFn), time.Minute, "/prometheus", log.NewNopLogger())
 
 	tm := time.Unix(1649092025, 515834)
 	_, err := q.Query(context.Background(), "qs", tm)
@@ -73,4 +86,36 @@ func TestRemoteQuerier_QueryReq(t *testing.T) {
 	require.Equal(t, http.MethodPost, inReq.Method)
 	require.Equal(t, "query=qs&time="+url.QueryEscape(tm.Format(time.RFC3339Nano)), string(inReq.Body))
 	require.Equal(t, "/prometheus/api/v1/query", inReq.Url)
+}
+
+func TestRemoteQuerier_QueryReqTimeout(t *testing.T) {
+	mockClientFn := func(ctx context.Context, req *httpgrpc.HTTPRequest, _ ...grpc.CallOption) (*httpgrpc.HTTPResponse, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	q := NewRemoteQuerier(mockHTTPGRPCClient(mockClientFn), time.Second, "/prometheus", log.NewNopLogger())
+
+	tm := time.Unix(1649092025, 515834)
+	_, err := q.Query(context.Background(), "qs", tm)
+	require.Error(t, err)
+}
+
+func TestRemoteQuerier_StatusErrorResponses(t *testing.T) {
+	mockClientFn := func(ctx context.Context, req *httpgrpc.HTTPRequest, _ ...grpc.CallOption) (*httpgrpc.HTTPResponse, error) {
+		return &httpgrpc.HTTPResponse{Code: http.StatusUnprocessableEntity, Body: []byte(`{
+							"status": "error","errorType": "execution"
+						}`)}, nil
+	}
+	q := NewRemoteQuerier(mockHTTPGRPCClient(mockClientFn), time.Minute, "/prometheus", log.NewNopLogger())
+
+	tm := time.Unix(1649092025, 515834)
+
+	_, err := q.Query(context.Background(), "qs", tm)
+
+	require.Error(t, err)
+
+	st, ok := status.FromError(err)
+
+	require.True(t, ok)
+	require.Equal(t, codes.Code(http.StatusUnprocessableEntity), st.Code())
 }

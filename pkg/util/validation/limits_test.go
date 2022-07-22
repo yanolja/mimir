@@ -17,7 +17,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/time/rate"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
+
+	"github.com/grafana/mimir/pkg/ingester/activeseries"
 )
 
 // mockTenantLimits exposes per-tenant limits based on a provided map
@@ -55,8 +57,7 @@ func TestOverridesManager_GetOverrides(t *testing.T) {
 
 	// Update limits for tenant user1. We only update single field, the rest is copied from defaults.
 	// (That is how limits work when loaded from YAML)
-	l := Limits{}
-	l = defaults
+	l := defaults
 	l.MaxLabelValueLength = 150
 
 	tenantLimits["user1"] = &l
@@ -78,8 +79,9 @@ func TestLimitsLoadingFromYaml(t *testing.T) {
 	inp := `ingestion_rate: 0.5`
 
 	l := Limits{}
-	err := yaml.UnmarshalStrict([]byte(inp), &l)
-	require.NoError(t, err)
+	dec := yaml.NewDecoder(strings.NewReader(inp))
+	dec.KnownFields(true)
+	require.NoError(t, dec.Decode(&l))
 
 	assert.Equal(t, 0.5, l.IngestionRate, "from yaml")
 	assert.Equal(t, 100, l.MaxLabelNameLength, "from defaults")
@@ -181,8 +183,9 @@ metric_relabel_configs:
 	exp.SourceLabels = model.LabelNames([]model.LabelName{"le"})
 
 	l := Limits{}
-	err = yaml.UnmarshalStrict([]byte(inp), &l)
-	require.NoError(t, err)
+	dec := yaml.NewDecoder(strings.NewReader(inp))
+	dec.KnownFields(true)
+	require.NoError(t, dec.Decode(&l))
 
 	assert.Equal(t, []*relabel.Config{&exp}, l.MetricRelabelConfigs)
 }
@@ -377,7 +380,7 @@ testuser:
 
 	differentUserOverride := `
 differentuser:
-  alertmanager_notification_limits_per_integration:
+  alertmanager_notification_rate_limit_per_integration:
     email: 500
 `
 
@@ -459,7 +462,7 @@ testuser:
 			expectedBurstSize: 5,
 		},
 
-		"different user overridem, email": {
+		"different user override, email": {
 			testedIntegration: "email",
 			overrides:         differentUserOverride,
 			expectedRateLimit: 100,
@@ -486,6 +489,51 @@ testuser:
 
 			require.Equal(t, tc.expectedRateLimit, ov.NotificationRateLimit("testuser", tc.testedIntegration))
 			require.Equal(t, tc.expectedBurstSize, ov.NotificationBurstSize("testuser", tc.testedIntegration))
+		})
+	}
+}
+
+func TestCustomTrackerConfigDeserialize(t *testing.T) {
+	oldYaml := `
+    user:
+        active_series_custom_trackers_config:
+            baz: '{foo="bar"}'
+    `
+	expectedConfig, err := activeseries.NewCustomTrackersConfig(map[string]string{"baz": `{foo="bar"}`})
+	require.NoError(t, err, "creating expected config")
+	newYaml := `
+    user:
+        active_series_custom_trackers:
+            baz: '{foo="bar"}'
+    `
+	bothYaml := `
+    user:
+        active_series_custom_trackers:
+            baznew: '{foonew="barnew"}'
+        active_series_custom_trackers_config:
+            baz: '{foo="bar"}'
+    `
+	for name, tc := range map[string]struct {
+		yaml string
+	}{
+		"testOldVersionCopiedToNewField": {
+			yaml: oldYaml,
+		},
+		"testNewVersion": {
+			yaml: newYaml,
+		},
+		"testBothVersionsOldTakesPrecedenceInNewField": {
+			yaml: bothYaml,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			overrides := map[string]*Limits{}
+			err := yaml.Unmarshal([]byte(tc.yaml), &overrides)
+			require.NoError(t, err, "parsing overrides")
+
+			assert.True(t, overrides["user"].ActiveSeriesCustomTrackersConfigOld.Empty())
+			assert.False(t, overrides["user"].ActiveSeriesCustomTrackersConfig.Empty())
+			assert.Equal(t, expectedConfig.String(), overrides["user"].ActiveSeriesCustomTrackersConfig.String())
 		})
 	}
 }

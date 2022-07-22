@@ -6,31 +6,32 @@
 package main
 
 import (
-	"bytes"
 	"flag"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/go-kit/log"
+	"github.com/grafana/dskit/flagext"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"github.com/grafana/mimir/pkg/mimir"
 	"github.com/grafana/mimir/pkg/util/fieldcategory"
+	"github.com/grafana/mimir/pkg/util/test"
 )
 
 func TestFlagParsing(t *testing.T) {
 	for name, tc := range map[string]struct {
 		arguments      []string
 		yaml           string
-		stdoutMessage  string // string that must be included in stdout
-		stderrMessage  string // string that must be included in stderr
-		stdoutExcluded string // string that must NOT be included in stdout
-		stderrExcluded string // string that must NOT be included in stderr
+		stdoutMessage  string                                // string that must be included in stdout
+		stderrMessage  string                                // string that must be included in stderr
+		stdoutExcluded string                                // string that must NOT be included in stdout
+		stderrExcluded string                                // string that must NOT be included in stderr
+		assertConfig   func(t *testing.T, cfg *mimir.Config) // if not nil, will assert that stdout is config, unmarshal it as YAML and invoke this function.
 	}{
 		"help-short": {
 			arguments:      []string{"-h"},
@@ -96,9 +97,21 @@ func TestFlagParsing(t *testing.T) {
 			stderrExcluded: "ingester\n",
 		},
 
-		"root level configuration option specified as an empty node in YAML": {
-			yaml:          "querier:",
-			stderrMessage: "the Querier configuration in YAML has been specified as an empty YAML node",
+		"root level configuration option specified as an empty node in YAML does not set entire config to zero value": {
+			yaml: "querier:",
+			assertConfig: func(t *testing.T, cfg *mimir.Config) {
+				defaults := mimir.Config{}
+				flagext.DefaultValues(&defaults)
+
+				require.NotZero(t, defaults.Querier.MaxQueryIntoFuture,
+					"This test asserts that mimir.Config.Querier.MaxQueryIntoFuture default value is not zero. "+
+						"If it's zero, this test is useless. Please change it to use a config value with a non-zero default.",
+				)
+
+				require.Equal(t, cfg.Querier.MaxQueryIntoFuture, defaults.Querier.MaxQueryIntoFuture,
+					"YAML parser has set the [entire] Querier config to zero values by specifying an empty node."+
+						"If this happens again, check git history on how this was checked with previous YAML parser implementation.")
+			},
 		},
 
 		"version": {
@@ -106,11 +119,130 @@ func TestFlagParsing(t *testing.T) {
 			stdoutMessage: "Mimir, version",
 		},
 
+		"common yaml inheritance with common config in the first place": {
+			yaml: `
+common:
+  storage:
+    backend: s3
+    s3:
+      region: common-region
+blocks_storage:
+  s3:
+    region: blocks-storage-region
+ruler_storage:
+  backend: s3
+  s3:
+    bucket_name: ruler-bucket
+alertmanager_storage:
+  backend: local
+`,
+			assertConfig: func(t *testing.T, cfg *mimir.Config) {
+				require.Equal(t, "s3", cfg.BlocksStorage.Bucket.Backend, "Blocks storage bucket backend should be inherited from common")
+				require.Equal(t, "blocks-storage-region", cfg.BlocksStorage.Bucket.S3.Region, "Blocks storage bucket s3 region should override common")
+				require.Equal(t, "s3", cfg.RulerStorage.Backend, "Ruler storage backend should stay the same (it's explicitly defined)")
+				require.Equal(t, "common-region", cfg.RulerStorage.S3.Region, "Ruler storage s3 region should be inherited from common")
+				require.Equal(t, "ruler-bucket", cfg.RulerStorage.S3.BucketName, "Ruler storage s3 bucket name should be defined")
+				require.Equal(t, "local", cfg.AlertmanagerStorage.Backend, "Alertmanager storage backend should be local (overriding common)")
+				require.Equal(t, "common-region", cfg.AlertmanagerStorage.S3.Region, "Alertmanager storage s3 region should be inherited from common as overrides don't know about config semantics")
+			},
+		},
+
+		"common yaml inheritance with common config in the last place": {
+			yaml: `
+blocks_storage:
+  s3:
+    region: blocks-storage-region
+ruler_storage:
+  backend: s3
+  s3:
+    bucket_name: ruler-bucket
+alertmanager_storage:
+  backend: local
+common:
+  storage:
+    backend: s3
+    s3:
+      region: common-region
+`,
+			assertConfig: func(t *testing.T, cfg *mimir.Config) {
+				require.Equal(t, "s3", cfg.BlocksStorage.Bucket.Backend, "Blocks storage bucket backend should be inherited from common")
+				require.Equal(t, "blocks-storage-region", cfg.BlocksStorage.Bucket.S3.Region, "Blocks storage bucket s3 region should override common")
+				require.Equal(t, "s3", cfg.RulerStorage.Backend, "Ruler storage backend should stay the same (it's explicitly defined)")
+				require.Equal(t, "common-region", cfg.RulerStorage.S3.Region, "Ruler storage s3 region should be inherited from common")
+				require.Equal(t, "ruler-bucket", cfg.RulerStorage.S3.BucketName, "Ruler storage s3 bucket name should be defined")
+				require.Equal(t, "local", cfg.AlertmanagerStorage.Backend, "Alertmanager storage backend should be local (overriding common)")
+				require.Equal(t, "common-region", cfg.AlertmanagerStorage.S3.Region, "Alertmanager storage s3 region should be inherited from common as overrides don't know about config semantics")
+			},
+		},
+
+		"common yaml sets a value but specific config reverts it back": {
+			yaml: `
+common:
+  storage:
+    backend: s3
+    s3:
+      region: common-region
+blocks_storage:
+  s3:
+    region: ""
+`,
+			assertConfig: func(t *testing.T, cfg *mimir.Config) {
+				require.Equal(t, "", cfg.BlocksStorage.Bucket.S3.Region, "Blocks storage region should be empty since it's explicitly set to be empty")
+				require.Equal(t, "common-region", cfg.RulerStorage.S3.Region, "Ruler storage should inherit the common-region")
+			},
+		},
+
+		"common yaml unmarshaling is strict": {
+			yaml: `
+common:
+  unknown: value
+`,
+			stderrMessage: "field unknown not found",
+		},
+
+		"common yaml overridden by a common flag and specific flag": {
+			yaml: `
+common:
+  storage:
+    backend: s3
+ruler_storage:
+  backend: local
+`,
+			arguments: []string{
+				"-common.storage.backend=swift",
+				"-blocks-storage.backend=gcs",
+			},
+			assertConfig: func(t *testing.T, cfg *mimir.Config) {
+				require.Equal(t, "gcs", cfg.BlocksStorage.Bucket.Backend, "Blocks storage bucket should be overridden")
+				require.Equal(t, "swift", cfg.RulerStorage.Backend, "Ruler storage should be set from the common flag, as flags prevail over yaml")
+			},
+		},
+
+		"common flag inheritance": {
+			arguments: []string{
+				"-common.storage.backend=s3",
+				"-common.storage.s3.region=common-region",
+				"-blocks-storage.s3.region=blocks-storage-region", // overrides common region
+				"-ruler-storage.backend=s3",                       // overrides common backend with same value
+				"-ruler-storage.s3.bucket-name=ruler-bucket",      // sets a specific bucket value for ruler (common is not set)
+				"-alertmanager-storage.backend=local",             // local alertmanager storage
+			},
+			assertConfig: func(t *testing.T, cfg *mimir.Config) {
+				require.Equal(t, "s3", cfg.BlocksStorage.Bucket.Backend, "Blocks storage bucket backend should be inherited from common")
+				require.Equal(t, "blocks-storage-region", cfg.BlocksStorage.Bucket.S3.Region, "Blocks storage bucket s3 region should override common")
+				require.Equal(t, "s3", cfg.RulerStorage.Backend, "Ruler storage backend should stay the same (it's explicitly defined)")
+				require.Equal(t, "common-region", cfg.RulerStorage.S3.Region, "Ruler storage s3 region should be inherited from common")
+				require.Equal(t, "ruler-bucket", cfg.RulerStorage.S3.BucketName, "Ruler storage s3 bucket name should be defined")
+				require.Equal(t, "local", cfg.AlertmanagerStorage.Backend, "Alertmanager storage backend should be local (overriding common)")
+				require.Equal(t, "common-region", cfg.AlertmanagerStorage.S3.Region, "Alertmanager storage s3 region should be inherited from common as overrides don't know about config semantics")
+			},
+		},
+
 		// we cannot test the happy path, as mimir would then fully start
 	} {
 		t.Run(name, func(t *testing.T) {
 			_ = os.Setenv("TARGET", "ingester")
-			testSingle(t, tc.arguments, tc.yaml, []byte(tc.stdoutMessage), []byte(tc.stderrMessage), []byte(tc.stdoutExcluded), []byte(tc.stderrExcluded))
+			testSingle(t, tc.arguments, tc.yaml, tc.stdoutMessage, tc.stderrMessage, tc.stdoutExcluded, tc.stderrExcluded, tc.assertConfig)
 		})
 	}
 }
@@ -150,7 +282,7 @@ func TestHelp(t *testing.T) {
 			t.Cleanup(restoreIfNeeded)
 
 			testMode = true
-			co := captureOutput(t)
+			co := test.CaptureOutput(t)
 
 			const cmd = "./cmd/mimir/mimir"
 			os.Args = []string{cmd, tc.arg}
@@ -173,7 +305,7 @@ func TestHelp(t *testing.T) {
 	}
 }
 
-func testSingle(t *testing.T, arguments []string, yaml string, stdoutMessage, stderrMessage, stdoutExcluded, stderrExcluded []byte) {
+func testSingle(t *testing.T, arguments []string, configYAML string, stdoutMessage, stderrMessage, stdoutExcluded, stderrExcluded string, assertConfig func(*testing.T, *mimir.Config)) {
 	t.Helper()
 	oldArgs, oldStdout, oldStderr, oldTestMode := os.Args, os.Stdout, os.Stderr, testMode
 	restored := false
@@ -189,10 +321,10 @@ func testSingle(t *testing.T, arguments []string, yaml string, stdoutMessage, st
 	}
 	defer restoreIfNeeded()
 
-	if yaml != "" {
+	if configYAML != "" {
 		tempDir := t.TempDir()
 		fpath := filepath.Join(tempDir, "test")
-		err := os.WriteFile(fpath, []byte(yaml), 0600)
+		err := os.WriteFile(fpath, []byte(configYAML), 0600)
 		require.NoError(t, err)
 
 		arguments = append(arguments, "-"+configFileOption, fpath)
@@ -202,7 +334,7 @@ func testSingle(t *testing.T, arguments []string, yaml string, stdoutMessage, st
 
 	testMode = true
 	os.Args = arguments
-	co := captureOutput(t)
+	co := test.CaptureOutput(t)
 
 	// reset default flags
 	flag.CommandLine = flag.NewFlagSet(arguments[0], flag.ExitOnError)
@@ -213,67 +345,23 @@ func testSingle(t *testing.T, arguments []string, yaml string, stdoutMessage, st
 
 	// Restore stdout and stderr before reporting errors to make them visible.
 	restoreIfNeeded()
-	if !bytes.Contains(stdout, stdoutMessage) {
+	if !strings.Contains(stdout, stdoutMessage) {
 		t.Errorf("Expected on stdout: %q, stdout: %s\n", stdoutMessage, stdout)
 	}
-	if !bytes.Contains(stderr, stderrMessage) {
+	if !strings.Contains(stderr, stderrMessage) {
 		t.Errorf("Expected on stderr: %q, stderr: %s\n", stderrMessage, stderr)
 	}
-	if len(stdoutExcluded) > 0 && bytes.Contains(stdout, stdoutExcluded) {
+	if len(stdoutExcluded) > 0 && strings.Contains(stdout, stdoutExcluded) {
 		t.Errorf("Unexpected output on stdout: %q, stdout: %s\n", stdoutExcluded, stdout)
 	}
-	if len(stderrExcluded) > 0 && bytes.Contains(stderr, stderrExcluded) {
+	if len(stderrExcluded) > 0 && strings.Contains(stderr, stderrExcluded) {
 		t.Errorf("Unexpected output on stderr: %q, stderr: %s\n", stderrExcluded, stderr)
 	}
-}
-
-type capturedOutput struct {
-	stdoutBuf bytes.Buffer
-	stderrBuf bytes.Buffer
-
-	wg                         sync.WaitGroup
-	stdoutReader, stdoutWriter *os.File
-	stderrReader, stderrWriter *os.File
-}
-
-func captureOutput(t *testing.T) *capturedOutput {
-	stdoutR, stdoutW, err := os.Pipe()
-	require.NoError(t, err)
-	os.Stdout = stdoutW
-
-	stderrR, stderrW, err := os.Pipe()
-	require.NoError(t, err)
-	os.Stderr = stderrW
-
-	co := &capturedOutput{
-		stdoutReader: stdoutR,
-		stdoutWriter: stdoutW,
-		stderrReader: stderrR,
-		stderrWriter: stderrW,
+	if assertConfig != nil {
+		var cfg mimir.Config
+		require.NoError(t, yaml.Unmarshal([]byte(stdout), &cfg), "Can't unmarshal stdout as yaml config")
+		assertConfig(t, &cfg)
 	}
-	co.wg.Add(1)
-	go func() {
-		defer co.wg.Done()
-		io.Copy(&co.stdoutBuf, stdoutR)
-	}()
-
-	co.wg.Add(1)
-	go func() {
-		defer co.wg.Done()
-		io.Copy(&co.stderrBuf, stderrR)
-	}()
-
-	return co
-}
-
-func (co *capturedOutput) Done() (stdout []byte, stderr []byte) {
-	// we need to close writers for readers to stop
-	_ = co.stdoutWriter.Close()
-	_ = co.stderrWriter.Close()
-
-	co.wg.Wait()
-
-	return co.stdoutBuf.Bytes(), co.stderrBuf.Bytes()
 }
 
 func TestExpandEnvironmentVariables(t *testing.T) {

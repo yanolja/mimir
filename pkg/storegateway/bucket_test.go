@@ -46,7 +46,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/thanos-io/thanos/pkg/block"
-	"github.com/thanos-io/thanos/pkg/block/indexheader"
 	"github.com/thanos-io/thanos/pkg/block/metadata"
 	"github.com/thanos-io/thanos/pkg/compact/downsample"
 	"github.com/thanos-io/thanos/pkg/gate"
@@ -62,6 +61,7 @@ import (
 	"github.com/grafana/mimir/pkg/storage/sharding"
 	mimir_tsdb "github.com/grafana/mimir/pkg/storage/tsdb"
 	"github.com/grafana/mimir/pkg/storegateway/indexcache"
+	"github.com/grafana/mimir/pkg/storegateway/indexheader"
 	"github.com/grafana/mimir/pkg/util/test"
 )
 
@@ -76,7 +76,7 @@ func TestBucketBlock_Property(t *testing.T) {
 	parameters.MinSuccessfulTests = 20000
 	properties := gopter.NewProperties(parameters)
 
-	set := newBucketBlockSet(labels.Labels{})
+	set := newBucketBlockSet()
 
 	type resBlock struct {
 		mint, maxt int64
@@ -211,10 +211,7 @@ func TestBucketBlock_matchLabels(t *testing.T) {
 	meta := &metadata.Meta{
 		BlockMeta: tsdb.BlockMeta{ULID: blockID},
 		Thanos: metadata.Thanos{
-			Labels: map[string]string{
-				"a": "b",
-				"c": "d",
-			},
+			Labels: map[string]string{}, // this is empty in Mimir
 		},
 	}
 
@@ -234,7 +231,7 @@ func TestBucketBlock_matchLabels(t *testing.T) {
 				{Type: labels.MatchEqual, Name: "a", Value: "b"},
 				{Type: labels.MatchEqual, Name: "c", Value: "d"},
 			},
-			match: true,
+			match: false,
 		},
 		{
 			in: []*labels.Matcher{
@@ -283,19 +280,16 @@ func TestBucketBlock_matchLabels(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		ok := b.matchRelabelLabels(c.in)
+		ok := b.matchLabels(c.in)
 		assert.Equal(t, c.match, ok)
 	}
 
 	// Ensure block's labels in the meta have not been manipulated.
-	assert.Equal(t, map[string]string{
-		"a": "b",
-		"c": "d",
-	}, meta.Thanos.Labels)
+	assert.Equal(t, map[string]string{}, meta.Thanos.Labels)
 }
 
 func TestBucketBlockSet_addGet(t *testing.T) {
-	set := newBucketBlockSet(labels.Labels{})
+	set := newBucketBlockSet()
 
 	type resBlock struct {
 		mint, maxt int64
@@ -404,7 +398,7 @@ func TestBucketBlockSet_addGet(t *testing.T) {
 }
 
 func TestBucketBlockSet_remove(t *testing.T) {
-	set := newBucketBlockSet(labels.Labels{})
+	set := newBucketBlockSet()
 
 	type resBlock struct {
 		id         ulid.ULID
@@ -429,73 +423,6 @@ func TestBucketBlockSet_remove(t *testing.T) {
 	assert.Equal(t, 2, len(res))
 	assert.Equal(t, input[0].id, res[0].meta.ULID)
 	assert.Equal(t, input[2].id, res[1].meta.ULID)
-}
-
-func TestBucketBlockSet_labelMatchers(t *testing.T) {
-	set := newBucketBlockSet(labels.FromStrings("a", "b", "c", "d"))
-
-	cases := []struct {
-		in    []*labels.Matcher
-		res   []*labels.Matcher
-		match bool
-	}{
-		{
-			in:    []*labels.Matcher{},
-			res:   []*labels.Matcher{},
-			match: true,
-		},
-		{
-			in: []*labels.Matcher{
-				{Type: labels.MatchEqual, Name: "a", Value: "b"},
-				{Type: labels.MatchEqual, Name: "c", Value: "d"},
-			},
-			res:   []*labels.Matcher{},
-			match: true,
-		},
-		{
-			in: []*labels.Matcher{
-				{Type: labels.MatchEqual, Name: "a", Value: "b"},
-				{Type: labels.MatchEqual, Name: "c", Value: "b"},
-			},
-			match: false,
-		},
-		{
-			in: []*labels.Matcher{
-				{Type: labels.MatchEqual, Name: "a", Value: "b"},
-				{Type: labels.MatchEqual, Name: "e", Value: "f"},
-			},
-			res: []*labels.Matcher{
-				{Type: labels.MatchEqual, Name: "e", Value: "f"},
-			},
-			match: true,
-		},
-		// Those are matchers mentioned here: https://github.com/prometheus/prometheus/pull/3578#issuecomment-351653555
-		// We want to provide explicit tests that says when Thanos supports its and when not. We don't support it here in
-		// external labelset level.
-		{
-			in: []*labels.Matcher{
-				{Type: labels.MatchNotEqual, Name: "", Value: "x"},
-			},
-			res: []*labels.Matcher{
-				{Type: labels.MatchNotEqual, Name: "", Value: "x"},
-			},
-			match: true,
-		},
-		{
-			in: []*labels.Matcher{
-				{Type: labels.MatchNotEqual, Name: "", Value: "d"},
-			},
-			res: []*labels.Matcher{
-				{Type: labels.MatchNotEqual, Name: "", Value: "d"},
-			},
-			match: true,
-		},
-	}
-	for _, c := range cases {
-		res, ok := set.labelMatchers(c.in...)
-		assert.Equal(t, c.match, ok)
-		assert.Equal(t, c.res, res)
-	}
 }
 
 // Regression tests against: https://github.com/thanos-io/thanos/issues/1983.
@@ -1096,7 +1023,7 @@ func prepareTestBlock(tb test.TB, series int) func() *bucketBlock {
 	})
 
 	id := uploadTestBlock(tb, tmpDir, bkt, series)
-	r, err := indexheader.NewBinaryReader(context.Background(), log.NewNopLogger(), bkt, tmpDir, id, mimir_tsdb.DefaultPostingOffsetInMemorySampling)
+	r, err := indexheader.NewBinaryReader(context.Background(), log.NewNopLogger(), bkt, tmpDir, id, mimir_tsdb.DefaultPostingOffsetInMemorySampling, indexheader.BinaryReaderConfig{})
 	require.NoError(tb, err)
 
 	return func() *bucketBlock {
@@ -1117,7 +1044,7 @@ func uploadTestBlock(t testing.TB, tmpDir string, bkt objstore.Bucket, series in
 	headOpts := tsdb.DefaultHeadOptions()
 	headOpts.ChunkDirRoot = tmpDir
 	headOpts.ChunkRange = 1000
-	h, err := tsdb.NewHead(nil, nil, nil, headOpts, nil)
+	h, err := tsdb.NewHead(nil, nil, nil, nil, headOpts, nil)
 	assert.NoError(t, err)
 	defer func() {
 		assert.NoError(t, h.Close())
@@ -1164,7 +1091,7 @@ func appendTestData(t testing.TB, app storage.Appender, series int) {
 }
 
 func createBlockFromHead(t testing.TB, dir string, head *tsdb.Head) ulid.ULID {
-	compactor, err := tsdb.NewLeveledCompactor(context.Background(), nil, log.NewNopLogger(), []int64{1000000}, nil, nil)
+	compactor, err := tsdb.NewLeveledCompactor(context.Background(), nil, log.NewNopLogger(), []int64{1000000}, nil, nil, true)
 	assert.NoError(t, err)
 
 	assert.NoError(t, os.MkdirAll(dir, 0777))
@@ -1359,6 +1286,7 @@ func benchBucketSeries(t test.TB, skipChunk bool, samplesPerSeries, totalSeries 
 		newGapBasedPartitioner(mimir_tsdb.DefaultPartitionerMaxGapSize, nil),
 		1,
 		mimir_tsdb.DefaultPostingOffsetInMemorySampling,
+		indexheader.BinaryReaderConfig{},
 		false,
 		false,
 		0,
@@ -1488,7 +1416,7 @@ func TestBucketSeries_OneBlock_InMemIndexCacheSegfault(t *testing.T) {
 	// This allows to pick time range that will correspond to number of series picked 1:1.
 	{
 		// Block 1.
-		h, err := tsdb.NewHead(nil, nil, nil, headOpts, nil)
+		h, err := tsdb.NewHead(nil, nil, nil, nil, headOpts, nil)
 		assert.NoError(t, err)
 		defer func() { assert.NoError(t, h.Close()) }()
 
@@ -1520,14 +1448,14 @@ func TestBucketSeries_OneBlock_InMemIndexCacheSegfault(t *testing.T) {
 			chunkObjs:   []string{filepath.Join(id.String(), "chunks", "000001")},
 			chunkPool:   chunkPool,
 		}
-		b1.indexHeaderReader, err = indexheader.NewBinaryReader(context.Background(), log.NewNopLogger(), bkt, tmpDir, b1.meta.ULID, mimir_tsdb.DefaultPostingOffsetInMemorySampling)
+		b1.indexHeaderReader, err = indexheader.NewBinaryReader(context.Background(), log.NewNopLogger(), bkt, tmpDir, b1.meta.ULID, mimir_tsdb.DefaultPostingOffsetInMemorySampling, indexheader.BinaryReaderConfig{})
 		assert.NoError(t, err)
 	}
 
 	var b2 *bucketBlock
 	{
 		// Block 2, do not load this block yet.
-		h, err := tsdb.NewHead(nil, nil, nil, headOpts, nil)
+		h, err := tsdb.NewHead(nil, nil, nil, nil, headOpts, nil)
 		assert.NoError(t, err)
 		defer func() { assert.NoError(t, h.Close()) }()
 
@@ -1559,7 +1487,7 @@ func TestBucketSeries_OneBlock_InMemIndexCacheSegfault(t *testing.T) {
 			chunkObjs:   []string{filepath.Join(id.String(), "chunks", "000001")},
 			chunkPool:   chunkPool,
 		}
-		b2.indexHeaderReader, err = indexheader.NewBinaryReader(context.Background(), log.NewNopLogger(), bkt, tmpDir, b2.meta.ULID, mimir_tsdb.DefaultPostingOffsetInMemorySampling)
+		b2.indexHeaderReader, err = indexheader.NewBinaryReader(context.Background(), log.NewNopLogger(), bkt, tmpDir, b2.meta.ULID, mimir_tsdb.DefaultPostingOffsetInMemorySampling, indexheader.BinaryReaderConfig{})
 		assert.NoError(t, err)
 	}
 
@@ -1570,9 +1498,7 @@ func TestBucketSeries_OneBlock_InMemIndexCacheSegfault(t *testing.T) {
 		indexCache:      indexCache,
 		indexReaderPool: indexheader.NewReaderPool(log.NewNopLogger(), false, 0, indexheader.NewReaderPoolMetrics(nil)),
 		metrics:         NewBucketStoreMetrics(nil),
-		blockSets: map[uint64]*bucketBlockSet{
-			labels.Labels{{Name: "ext1", Value: "1"}}.Hash(): {blocks: [][]*bucketBlock{{b1, b2}}},
-		},
+		blockSet:        &bucketBlockSet{blocks: [][]*bucketBlock{{b1, b2}}},
 		blocks: map[ulid.ULID]*bucketBlock{
 			b1.meta.ULID: b1,
 			b2.meta.ULID: b2,
@@ -1723,6 +1649,7 @@ func TestSeries_ErrorUnmarshallingRequestHints(t *testing.T) {
 		newGapBasedPartitioner(mimir_tsdb.DefaultPartitionerMaxGapSize, nil),
 		10,
 		mimir_tsdb.DefaultPostingOffsetInMemorySampling,
+		indexheader.BinaryReaderConfig{},
 		true,
 		false,
 		0,
@@ -1761,7 +1688,7 @@ func TestSeries_BlockWithMultipleChunks(t *testing.T) {
 	headOpts.ChunkDirRoot = filepath.Join(tmpDir, "block")
 	headOpts.ChunkRange = math.MaxInt64
 
-	h, err := tsdb.NewHead(nil, nil, nil, headOpts, nil)
+	h, err := tsdb.NewHead(nil, nil, nil, nil, headOpts, nil)
 	assert.NoError(t, err)
 	defer func() { assert.NoError(t, h.Close()) }()
 
@@ -1813,6 +1740,7 @@ func TestSeries_BlockWithMultipleChunks(t *testing.T) {
 		newGapBasedPartitioner(mimir_tsdb.DefaultPartitionerMaxGapSize, nil),
 		10,
 		mimir_tsdb.DefaultPostingOffsetInMemorySampling,
+		indexheader.BinaryReaderConfig{},
 		true,
 		false,
 		0,
@@ -1910,7 +1838,7 @@ func createBlockWithOneSeriesWithStep(t test.TB, dir string, lbls labels.Labels,
 	headOpts := tsdb.DefaultHeadOptions()
 	headOpts.ChunkDirRoot = dir
 	headOpts.ChunkRange = int64(totalSamples) * step
-	h, err := tsdb.NewHead(nil, nil, nil, headOpts, nil)
+	h, err := tsdb.NewHead(nil, nil, nil, nil, headOpts, nil)
 	assert.NoError(t, err)
 	defer func() { assert.NoError(t, h.Close()) }()
 
@@ -1996,6 +1924,7 @@ func setupStoreForHintsTest(t *testing.T) (test.TB, *BucketStore, []*storepb.Ser
 		newGapBasedPartitioner(mimir_tsdb.DefaultPartitionerMaxGapSize, nil),
 		10,
 		mimir_tsdb.DefaultPostingOffsetInMemorySampling,
+		indexheader.BinaryReaderConfig{},
 		true,
 		false,
 		0,
@@ -2296,7 +2225,7 @@ func prepareBucket(b *testing.B, resolutionLevel compactor.ResolutionLevel) (*bu
 	partitioner := newGapBasedPartitioner(mimir_tsdb.DefaultPartitionerMaxGapSize, nil)
 
 	// Create an index header reader.
-	indexHeaderReader, err := indexheader.NewBinaryReader(ctx, logger, bkt, tmpDir, blockMeta.ULID, mimir_tsdb.DefaultPostingOffsetInMemorySampling)
+	indexHeaderReader, err := indexheader.NewBinaryReader(ctx, logger, bkt, tmpDir, blockMeta.ULID, mimir_tsdb.DefaultPostingOffsetInMemorySampling, indexheader.BinaryReaderConfig{})
 	assert.NoError(b, err)
 	indexCache, err := indexcache.NewInMemoryIndexCacheWithConfig(logger, nil, indexcache.DefaultInMemoryIndexCacheConfig)
 	assert.NoError(b, err)
@@ -2560,7 +2489,7 @@ func createHeadWithSeries(t testing.TB, j int, opts headGenOptions) (*tsdb.Head,
 
 	headOpts := tsdb.DefaultHeadOptions()
 	headOpts.ChunkDirRoot = opts.TSDBDir
-	h, err := tsdb.NewHead(nil, nil, w, headOpts, nil)
+	h, err := tsdb.NewHead(nil, nil, w, nil, headOpts, nil)
 	assert.NoError(t, err)
 
 	app := h.Appender(context.Background())
@@ -2612,7 +2541,7 @@ func createHeadWithSeries(t testing.TB, j int, opts headGenOptions) (*tsdb.Head,
 		}
 
 		for _, c := range chunkMetas {
-			chEnc, err := chks.Chunk(c.Ref)
+			chEnc, err := chks.Chunk(c)
 			assert.NoError(t, err)
 
 			// Open Chunk.

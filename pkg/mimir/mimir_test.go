@@ -61,9 +61,11 @@ func TestMimir(t *testing.T) {
 		Ingester: ingester.Config{
 			BlocksStorageConfig: tsdb.BlocksStorageConfig{
 				Bucket: bucket.Config{
-					Backend: bucket.S3,
-					S3: s3.Config{
-						Endpoint: "localhost",
+					StorageBackendConfig: bucket.StorageBackendConfig{
+						Backend: bucket.S3,
+						S3: s3.Config{
+							Endpoint: "localhost",
+						},
 					},
 				},
 			},
@@ -77,9 +79,11 @@ func TestMimir(t *testing.T) {
 		},
 		BlocksStorage: tsdb.BlocksStorageConfig{
 			Bucket: bucket.Config{
-				Backend: bucket.S3,
-				S3: s3.Config{
-					Endpoint: "localhost",
+				StorageBackendConfig: bucket.StorageBackendConfig{
+					Backend: bucket.S3,
+					S3: s3.Config{
+						Endpoint: "localhost",
+					},
 				},
 			},
 			BucketStore: tsdb.BucketStoreConfig{
@@ -102,9 +106,11 @@ func TestMimir(t *testing.T) {
 		},
 		RulerStorage: rulestore.Config{
 			Config: bucket.Config{
-				Backend: "filesystem",
-				Filesystem: filesystem.Config{
-					Directory: t.TempDir(),
+				StorageBackendConfig: bucket.StorageBackendConfig{
+					Backend: "filesystem",
+					Filesystem: filesystem.Config{
+						Directory: t.TempDir(),
+					},
 				},
 			},
 		},
@@ -124,9 +130,11 @@ func TestMimir(t *testing.T) {
 		},
 		AlertmanagerStorage: alertstore.Config{
 			Config: bucket.Config{
-				Backend: "filesystem",
-				Filesystem: filesystem.Config{
-					Directory: t.TempDir(),
+				StorageBackendConfig: bucket.StorageBackendConfig{
+					Backend: "filesystem",
+					Filesystem: filesystem.Config{
+						Directory: t.TempDir(),
+					},
 				},
 			},
 		},
@@ -344,6 +352,21 @@ func TestConfigValidation(t *testing.T) {
 				return cfg
 			},
 			expectAnyError: true,
+		},
+		{
+			name: "S3: should pass if bucket name is shared between alertmanager and ruler storage because they already use separate prefixes (rules/ and alerts/)",
+			getTestConfig: func() *Config {
+				cfg := newDefaultConfig()
+				_ = cfg.Target.Set("all,alertmanager")
+
+				for _, bucketCfg := range []*bucket.Config{&cfg.RulerStorage.Config, &cfg.AlertmanagerStorage.Config} {
+					bucketCfg.Backend = bucket.S3
+					bucketCfg.S3.BucketName = "b1"
+					bucketCfg.S3.Region = "r1"
+				}
+				return cfg
+			},
+			expectedError: nil,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -7,6 +7,7 @@ package push
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 
@@ -22,6 +23,9 @@ import (
 // Func defines the type of the push. It is similar to http.HandlerFunc.
 type Func func(ctx context.Context, req *mimirpb.WriteRequest, cleanup func()) (*mimirpb.WriteResponse, error)
 
+// ParserFunc defines the parser code.
+type ParserFunc func(ctx context.Context, r *http.Request, maxSize int, buffer []byte, req *mimirpb.PreallocWriteRequest) ([]byte, error)
+
 // Wrap a slice in a struct so we can store a pointer in sync.Pool
 type bufHolder struct {
 	buf []byte
@@ -32,6 +36,7 @@ var bufferPool = sync.Pool{
 }
 
 const SkipLabelNameValidationHeader = "X-Mimir-SkipLabelNameValidation"
+const statusClientClosedRequest = 499
 
 // Handler is a http.Handler which accepts WriteRequests.
 func Handler(
@@ -39,6 +44,18 @@ func Handler(
 	sourceIPs *middleware.SourceIPExtractor,
 	allowSkipLabelNameValidation bool,
 	push Func,
+) http.Handler {
+	return handler(maxRecvMsgSize, sourceIPs, allowSkipLabelNameValidation, push, func(ctx context.Context, r *http.Request, maxRecvMsgSize int, dst []byte, req *mimirpb.PreallocWriteRequest) ([]byte, error) {
+		return util.ParseProtoReader(ctx, r.Body, int(r.ContentLength), maxRecvMsgSize, dst, req, util.RawSnappy)
+	})
+}
+
+// handler requires an additional parser argument.
+func handler(maxRecvMsgSize int,
+	sourceIPs *middleware.SourceIPExtractor,
+	allowSkipLabelNameValidation bool,
+	push Func,
+	parser ParserFunc,
 ) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -52,7 +69,7 @@ func Handler(
 		}
 		bufHolder := bufferPool.Get().(*bufHolder)
 		var req mimirpb.PreallocWriteRequest
-		buf, err := util.ParseProtoReader(ctx, r.Body, int(r.ContentLength), maxRecvMsgSize, bufHolder.buf, &req, util.RawSnappy)
+		buf, err := parser(ctx, r, maxRecvMsgSize, bufHolder.buf, &req)
 		if err != nil {
 			level.Error(logger).Log("err", err.Error())
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -80,6 +97,11 @@ func Handler(
 		}
 
 		if _, err := push(ctx, &req.WriteRequest, cleanup); err != nil {
+			if errors.Is(err, context.Canceled) {
+				http.Error(w, err.Error(), statusClientClosedRequest)
+				level.Warn(logger).Log("msg", "push request canceled", "err", err)
+				return
+			}
 			resp, ok := httpgrpc.HTTPResponseFromError(err)
 			if !ok {
 				http.Error(w, err.Error(), http.StatusInternalServerError)

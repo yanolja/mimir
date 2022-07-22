@@ -184,7 +184,7 @@ func TestDistributor_Push(t *testing.T) {
 			happyIngesters: 3,
 			samples:        samplesIn{num: 25, startTimestampMs: 123456789000},
 			metadata:       5,
-			expectedError:  httpgrpc.Errorf(http.StatusTooManyRequests, "ingestion rate limit (20) exceeded while adding 25 samples and 5 metadata"),
+			expectedError:  httpgrpc.Errorf(http.StatusTooManyRequests, validation.NewIngestionRateLimitedError(20, 20).Error()),
 			metricNames:    []string{lastSeenTimestamp},
 			expectedMetrics: `
 				# HELP cortex_distributor_latest_seen_sample_timestamp_seconds Unix timestamp of latest received sample per user.
@@ -305,6 +305,34 @@ func TestDistributor_Push(t *testing.T) {
 	}
 }
 
+func TestDistributor_ContextCanceledRequest(t *testing.T) {
+	now := time.Now()
+	mtime.NowForce(now)
+	t.Cleanup(mtime.NowReset)
+
+	ds, ings, _ := prepare(t, prepConfig{
+		numIngesters:    3,
+		happyIngesters:  3,
+		numDistributors: 1,
+	})
+
+	// Lock all mockIngester instances, so they will be waiting
+	for i := range ings {
+		ings[i].Lock()
+		defer func(ing *mockIngester) {
+			ing.Unlock()
+		}(&ings[i])
+	}
+
+	ctx := user.InjectOrgID(context.Background(), "user")
+	ctx, cancel := context.WithCancel(ctx)
+	cancel()
+	request := makeWriteRequest(123456789000, 1, 1, false)
+	_, err := ds[0].Push(ctx, request)
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 func TestDistributor_MetricsCleanup(t *testing.T) {
 	dists, _, regs := prepare(t, prepConfig{
 		numDistributors: 1,
@@ -413,6 +441,84 @@ func TestDistributor_MetricsCleanup(t *testing.T) {
 		`), metrics...))
 }
 
+func TestDistributor_PushRequestRateLimiter(t *testing.T) {
+	type testPush struct {
+		expectedError error
+	}
+	ctx := user.InjectOrgID(context.Background(), "user")
+	tests := map[string]struct {
+		distributors     int
+		requestRate      float64
+		requestBurstSize int
+		pushes           []testPush
+	}{
+		"request limit should be evenly shared across distributors": {
+			distributors:     2,
+			requestRate:      4,
+			requestBurstSize: 2,
+			pushes: []testPush{
+				{expectedError: nil},
+				{expectedError: nil},
+				{expectedError: httpgrpc.Errorf(http.StatusTooManyRequests, validation.NewRequestRateLimitedError(4, 2).Error())},
+			},
+		},
+		"request limit is disabled when set to 0": {
+			distributors:     2,
+			requestRate:      0,
+			requestBurstSize: 0,
+			pushes: []testPush{
+				{expectedError: nil},
+				{expectedError: nil},
+				{expectedError: nil},
+			},
+		},
+		"request burst should set to each distributor": {
+			distributors:     2,
+			requestRate:      2,
+			requestBurstSize: 3,
+			pushes: []testPush{
+				{expectedError: nil},
+				{expectedError: nil},
+				{expectedError: nil},
+				{expectedError: httpgrpc.Errorf(http.StatusTooManyRequests, validation.NewRequestRateLimitedError(2, 3).Error())},
+			},
+		},
+	}
+
+	for testName, testData := range tests {
+		testData := testData
+
+		t.Run(testName, func(t *testing.T) {
+			limits := &validation.Limits{}
+			flagext.DefaultValues(limits)
+			limits.RequestRate = testData.requestRate
+			limits.RequestBurstSize = testData.requestBurstSize
+
+			// Start all expected distributors
+			distributors, _, _ := prepare(t, prepConfig{
+				numIngesters:    3,
+				happyIngesters:  3,
+				numDistributors: testData.distributors,
+				limits:          limits,
+			})
+
+			// Send multiple requests to the first distributor
+			for _, push := range testData.pushes {
+				request := makeWriteRequest(0, 1, 1, false)
+				response, err := distributors[0].Push(ctx, request)
+
+				if push.expectedError == nil {
+					assert.Equal(t, emptyResponse, response)
+					assert.Nil(t, err)
+				} else {
+					assert.Nil(t, response)
+					assert.EqualError(t, err, push.expectedError.Error())
+				}
+			}
+		})
+	}
+}
+
 func TestDistributor_PushIngestionRateLimiter(t *testing.T) {
 	type testPush struct {
 		samples       int
@@ -427,30 +533,30 @@ func TestDistributor_PushIngestionRateLimiter(t *testing.T) {
 		ingestionBurstSize int
 		pushes             []testPush
 	}{
-		"limit should be evenly shared across distributors": {
+		"evenly share the ingestion limit across distributors": {
 			distributors:       2,
 			ingestionRate:      10,
 			ingestionBurstSize: 5,
 			pushes: []testPush{
 				{samples: 2, expectedError: nil},
 				{samples: 1, expectedError: nil},
-				{samples: 2, metadata: 1, expectedError: httpgrpc.Errorf(http.StatusTooManyRequests, "ingestion rate limit (5) exceeded while adding 2 samples and 1 metadata")},
+				{samples: 2, metadata: 1, expectedError: httpgrpc.Errorf(http.StatusTooManyRequests, validation.NewIngestionRateLimitedError(10, 5).Error())},
 				{samples: 2, expectedError: nil},
-				{samples: 1, expectedError: httpgrpc.Errorf(http.StatusTooManyRequests, "ingestion rate limit (5) exceeded while adding 1 samples and 0 metadata")},
-				{metadata: 1, expectedError: httpgrpc.Errorf(http.StatusTooManyRequests, "ingestion rate limit (5) exceeded while adding 0 samples and 1 metadata")},
+				{samples: 1, expectedError: httpgrpc.Errorf(http.StatusTooManyRequests, validation.NewIngestionRateLimitedError(10, 5).Error())},
+				{metadata: 1, expectedError: httpgrpc.Errorf(http.StatusTooManyRequests, validation.NewIngestionRateLimitedError(10, 5).Error())},
 			},
 		},
-		"burst should set to each distributor": {
+		"for each distributor, set an ingestion burst limit.": {
 			distributors:       2,
 			ingestionRate:      10,
 			ingestionBurstSize: 20,
 			pushes: []testPush{
 				{samples: 10, expectedError: nil},
 				{samples: 5, expectedError: nil},
-				{samples: 5, metadata: 1, expectedError: httpgrpc.Errorf(http.StatusTooManyRequests, "ingestion rate limit (5) exceeded while adding 5 samples and 1 metadata")},
+				{samples: 5, metadata: 1, expectedError: httpgrpc.Errorf(http.StatusTooManyRequests, validation.NewIngestionRateLimitedError(10, 20).Error())},
 				{samples: 5, expectedError: nil},
-				{samples: 1, expectedError: httpgrpc.Errorf(http.StatusTooManyRequests, "ingestion rate limit (5) exceeded while adding 1 samples and 0 metadata")},
-				{metadata: 1, expectedError: httpgrpc.Errorf(http.StatusTooManyRequests, "ingestion rate limit (5) exceeded while adding 0 samples and 1 metadata")},
+				{samples: 1, expectedError: httpgrpc.Errorf(http.StatusTooManyRequests, validation.NewIngestionRateLimitedError(10, 20).Error())},
+				{metadata: 1, expectedError: httpgrpc.Errorf(http.StatusTooManyRequests, validation.NewIngestionRateLimitedError(10, 20).Error())},
 			},
 		},
 	}
@@ -504,6 +610,7 @@ func TestDistributor_PushInstanceLimits(t *testing.T) {
 
 		// limits
 		inflightLimit      int
+		inflightBytesLimit int
 		ingestionRateLimit float64
 
 		metricNames     []string
@@ -523,6 +630,7 @@ func TestDistributor_PushInstanceLimits(t *testing.T) {
 				# TYPE cortex_distributor_instance_limits gauge
 				cortex_distributor_instance_limits{limit="max_inflight_push_requests"} 0
 				cortex_distributor_instance_limits{limit="max_ingestion_rate"} 0
+		        cortex_distributor_instance_limits{limit="max_inflight_push_requests_bytes"} 0
 			`,
 		},
 		"below inflight limit": {
@@ -542,13 +650,14 @@ func TestDistributor_PushInstanceLimits(t *testing.T) {
 				# TYPE cortex_distributor_instance_limits gauge
 				cortex_distributor_instance_limits{limit="max_inflight_push_requests"} 101
 				cortex_distributor_instance_limits{limit="max_ingestion_rate"} 0
+		        cortex_distributor_instance_limits{limit="max_inflight_push_requests_bytes"} 0
 			`,
 		},
 		"hits inflight limit": {
 			preInflight:   101,
 			inflightLimit: 101,
 			pushes: []testPush{
-				{samples: 100, expectedError: errTooManyInflightPushRequests},
+				{samples: 100, expectedError: errMaxInflightRequestsReached},
 			},
 		},
 		"below ingestion rate limit": {
@@ -569,6 +678,7 @@ func TestDistributor_PushInstanceLimits(t *testing.T) {
 				# TYPE cortex_distributor_instance_limits gauge
 				cortex_distributor_instance_limits{limit="max_inflight_push_requests"} 0
 				cortex_distributor_instance_limits{limit="max_ingestion_rate"} 1000
+		        cortex_distributor_instance_limits{limit="max_inflight_push_requests_bytes"} 0
 			`,
 		},
 		"hits rate limit on first request, but second request can proceed": {
@@ -576,7 +686,7 @@ func TestDistributor_PushInstanceLimits(t *testing.T) {
 			ingestionRateLimit: 1000,
 
 			pushes: []testPush{
-				{samples: 100, expectedError: errMaxSamplesPushRateLimitReached},
+				{samples: 100, expectedError: errMaxIngestionRateReached},
 				{samples: 100, expectedError: nil},
 			},
 		},
@@ -586,10 +696,39 @@ func TestDistributor_PushInstanceLimits(t *testing.T) {
 			ingestionRateLimit: 1000,
 
 			pushes: []testPush{
-				{samples: 5000, expectedError: nil},                               // after push, rate = 500 + 0.2*(5000-500) = 1400
-				{samples: 5000, expectedError: errMaxSamplesPushRateLimitReached}, // after push, rate = 1400 + 0.2*(0 - 1400) = 1120
-				{samples: 5000, expectedError: errMaxSamplesPushRateLimitReached}, // after push, rate = 1120 + 0.2*(0 - 1120) = 896
-				{samples: 5000, expectedError: nil},                               // 896 is below 1000, so this push succeeds, new rate = 896 + 0.2*(5000-896) = 1716.8
+				{samples: 5000, expectedError: nil},                        // after push, rate = 500 + 0.2*(5000-500) = 1400
+				{samples: 5000, expectedError: errMaxIngestionRateReached}, // after push, rate = 1400 + 0.2*(0 - 1400) = 1120
+				{samples: 5000, expectedError: errMaxIngestionRateReached}, // after push, rate = 1120 + 0.2*(0 - 1120) = 896
+				{samples: 5000, expectedError: nil},                        // 896 is below 1000, so this push succeeds, new rate = 896 + 0.2*(5000-896) = 1716.8
+			},
+		},
+
+		"below inflight size limit": {
+			inflightBytesLimit: 5800, // 5800 ~= size of a singe request with 100 samples
+
+			pushes: []testPush{
+				{samples: 10, expectedError: nil},
+			},
+			metricNames: []string{instanceLimitsMetric, "cortex_distributor_inflight_push_requests_bytes"},
+
+			expectedMetrics: `
+				# HELP cortex_distributor_inflight_push_requests_bytes Current sum of inflight push requests in distributor in bytes.
+				# TYPE cortex_distributor_inflight_push_requests_bytes gauge
+				cortex_distributor_inflight_push_requests_bytes 0
+
+				# HELP cortex_distributor_instance_limits Instance limits used by this distributor.
+				# TYPE cortex_distributor_instance_limits gauge
+				cortex_distributor_instance_limits{limit="max_inflight_push_requests_bytes"} 5800
+				cortex_distributor_instance_limits{limit="max_inflight_push_requests"} 0
+				cortex_distributor_instance_limits{limit="max_ingestion_rate"} 0
+			`,
+		},
+
+		"hits inflight size limit": {
+			inflightBytesLimit: 5800, // 5800 ~= size of a singe request with 100 samples
+
+			pushes: []testPush{
+				{samples: 150, expectedError: errMaxInflightRequestsBytesReached},
 			},
 		},
 	}
@@ -603,12 +742,13 @@ func TestDistributor_PushInstanceLimits(t *testing.T) {
 
 			// Start all expected distributors
 			distributors, _, regs := prepare(t, prepConfig{
-				numIngesters:        3,
-				happyIngesters:      3,
-				numDistributors:     1,
-				limits:              limits,
-				maxInflightRequests: testData.inflightLimit,
-				maxIngestionRate:    testData.ingestionRateLimit,
+				numIngesters:             3,
+				happyIngesters:           3,
+				numDistributors:          1,
+				limits:                   limits,
+				maxInflightRequests:      testData.inflightLimit,
+				maxInflightRequestsBytes: testData.inflightBytesLimit,
+				maxIngestionRate:         testData.ingestionRateLimit,
 			})
 
 			d := distributors[0]
@@ -1929,7 +2069,7 @@ func TestDistributor_MetricsMetadata(t *testing.T) {
 	for testName, testData := range tests {
 		t.Run(testName, func(t *testing.T) {
 			// Create distributor
-			ds, ingesters, _ := prepare(t, prepConfig{
+			ds, _, _ := prepare(t, prepConfig{
 				numIngesters:     numIngesters,
 				happyIngesters:   numIngesters,
 				numDistributors:  1,
@@ -1944,16 +2084,15 @@ func TestDistributor_MetricsMetadata(t *testing.T) {
 			_, err := ds[0].Push(ctx, req)
 			require.NoError(t, err)
 
+			// Check how many ingesters are queried as part of the shuffle sharding subring.
+			replicationSet, err := ds[0].GetIngestersForMetadata(ctx)
+			require.NoError(t, err)
+			assert.Equal(t, testData.expectedIngesters, len(replicationSet.Instances))
+
 			// Assert on metric metadata
 			metadata, err := ds[0].MetricsMetadata(ctx)
 			require.NoError(t, err)
 			assert.Equal(t, 10, len(metadata))
-
-			// Check how many ingesters have been queried.
-			// Due to the quorum the distributor could cancel the last request towards ingesters
-			// if all other ones are successful, so we're good either has been queried X or X-1
-			// ingesters.
-			assert.Contains(t, []int{testData.expectedIngesters, testData.expectedIngesters - 1}, countMockIngestersCalls(ingesters, "MetricsMetadata"))
 		})
 	}
 }
@@ -2614,6 +2753,7 @@ type prepConfig struct {
 	numDistributors              int
 	skipLabelNameValidation      bool
 	maxInflightRequests          int
+	maxInflightRequestsBytes     int
 	maxIngestionRate             float64
 	replicationFactor            int
 	enableTracker                bool
@@ -2721,6 +2861,7 @@ func prepare(t *testing.T, cfg prepConfig) ([]*Distributor, []mockIngester, []*p
 		distributorCfg.DistributorRing.InstanceAddr = "127.0.0.1"
 		distributorCfg.SkipLabelNameValidation = cfg.skipLabelNameValidation
 		distributorCfg.InstanceLimits.MaxInflightPushRequests = cfg.maxInflightRequests
+		distributorCfg.InstanceLimits.MaxInflightPushRequestsBytes = cfg.maxInflightRequestsBytes
 		distributorCfg.InstanceLimits.MaxIngestionRate = cfg.maxIngestionRate
 		distributorCfg.ShuffleShardingLookbackPeriod = time.Hour
 
@@ -2761,7 +2902,7 @@ func prepare(t *testing.T, cfg prepConfig) ([]*Distributor, []mockIngester, []*p
 	// updates to the expected size
 	if distributors[0].distributorsRing != nil {
 		test.Poll(t, time.Second, cfg.numDistributors, func() interface{} {
-			return distributors[0].distributorsLifeCycler.HealthyInstancesCount()
+			return distributors[0].HealthyInstancesCount()
 		})
 	}
 

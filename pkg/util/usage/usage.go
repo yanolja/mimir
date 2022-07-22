@@ -33,6 +33,11 @@ func Usage(printAll bool, configs ...interface{}) error {
 		fieldCat := fieldcategory.Basic
 		var field reflect.StructField
 
+		// Do not print usage for deprecated flags.
+		if fl.Value.String() == "deprecated" {
+			return
+		}
+
 		if override, ok := fieldcategory.GetOverride(fl.Name); ok {
 			fieldCat = override
 		} else if v.Kind() == reflect.Ptr {
@@ -134,7 +139,7 @@ func parseStructure(structure interface{}, fields map[uintptr]reflect.StructFiel
 		fields[fieldValue.Addr().Pointer()] = field
 
 		// Recurse if a struct
-		if field.Type.Kind() != reflect.Struct || ignoreStructType(field.Type) {
+		if field.Type.Kind() != reflect.Struct || ignoreStructType(field.Type) || !field.IsExported() {
 			continue
 		}
 

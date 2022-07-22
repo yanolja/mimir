@@ -45,10 +45,6 @@ const (
 const (
 	blocksMarkedForDeletionName = "cortex_compactor_blocks_marked_for_deletion_total"
 	blocksMarkedForDeletionHelp = "Total number of blocks marked for deletion in compactor."
-
-	// PartialUploadThresholdAge is a time after partial block is assumed aborted and ready to be cleaned.
-	// Keep it long as it is based on block creation time not upload start time.
-	PartialUploadThresholdAge = 2 * 24 * time.Hour
 )
 
 var (
@@ -127,7 +123,7 @@ func (cfg *Config) RegisterFlags(f *flag.FlagSet, logger log.Logger) {
 	cfg.retryMaxBackoff = time.Minute
 
 	f.Var(&cfg.BlockRanges, "compactor.block-ranges", "List of compaction time ranges.")
-	f.DurationVar(&cfg.ConsistencyDelay, "compactor.consistency-delay", 0, fmt.Sprintf("Minimum age of fresh (non-compacted) blocks before they are being processed. Malformed blocks older than the maximum of consistency-delay and %s will be removed.", PartialUploadThresholdAge))
+	f.DurationVar(&cfg.ConsistencyDelay, "compactor.consistency-delay", 0, "Minimum age of fresh (non-compacted) blocks before they are being processed.")
 	f.IntVar(&cfg.BlockSyncConcurrency, "compactor.block-sync-concurrency", 8, "Number of Go routines to use when downloading blocks for compaction and uploading resulting blocks.")
 	f.IntVar(&cfg.MetaSyncConcurrency, "compactor.meta-sync-concurrency", 20, "Number of Go routines to use when syncing block meta files from the long term storage.")
 	f.StringVar(&cfg.DataDir, "compactor.data-dir", "./data-compactor/", "Directory to temporarily store blocks during compaction. This directory is not required to be persisted between restarts.")
@@ -192,6 +188,12 @@ type ConfigProvider interface {
 
 	// CompactorTenantShardSize returns number of compactors that this user can use. 0 = all compactors.
 	CompactorTenantShardSize(userID string) int
+
+	// CompactorPartialBlockDeletionDelay returns the partial block delay time period for a given user.
+	CompactorPartialBlockDeletionDelay(userID string) time.Duration
+
+	// CompactorBlockUploadEnabled returns whether block upload is enabled for a given tenant.
+	CompactorBlockUploadEnabled(tenantID string) bool
 }
 
 // MultitenantCompactor is a multi-tenant TSDB blocks compactor based on Thanos.
@@ -636,7 +638,12 @@ func (c *MultitenantCompactor) compactUser(ctx context.Context, userID string) e
 	fetcherFilters := []block.MetadataFilter{
 		// Remove the ingester ID because we don't shard blocks anymore, while still
 		// honoring the shard ID if sharding was done in the past.
-		NewLabelRemoverFilter([]string{mimir_tsdb.IngesterIDExternalLabel}),
+		// Remove TenantID external label to make sure that we compact blocks with and without the label
+		// together.
+		NewLabelRemoverFilter([]string{
+			mimir_tsdb.DeprecatedTenantIDExternalLabel,
+			mimir_tsdb.DeprecatedIngesterIDExternalLabel,
+		}),
 		block.NewConsistencyDelayMetaFilter(ulogger, c.compactorCfg.ConsistencyDelay, reg),
 		excludeMarkedForDeletionFilter,
 		deduplicateBlocksFilter,

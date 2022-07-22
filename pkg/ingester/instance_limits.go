@@ -9,6 +9,7 @@ import (
 	"flag"
 
 	"github.com/pkg/errors"
+	"gopkg.in/yaml.v3"
 
 	"github.com/grafana/mimir/pkg/util/globalerror"
 )
@@ -22,10 +23,10 @@ const (
 
 var (
 	// We don't include values in the message to avoid leaking Mimir cluster configuration to users.
-	errMaxIngestionRateReached    = errors.New(globalerror.IngesterMaxIngestionRate.MessageWithLimitConfig(maxIngestionRateFlag, "the write request has been rejected because the ingester exceeded the samples ingestion rate limit"))
-	errMaxTenantsReached          = errors.New(globalerror.IngesterMaxTenants.MessageWithLimitConfig(maxInMemoryTenantsFlag, "the write request has been rejected because the ingester exceeded the allowed number of tenants"))
-	errMaxInMemorySeriesReached   = errors.New(globalerror.IngesterMaxInMemorySeries.MessageWithLimitConfig(maxInMemorySeriesFlag, "the write request has been rejected because the ingester exceeded the allowed number of in-memory series"))
-	errMaxInflightRequestsReached = errors.New(globalerror.IngesterMaxInflightPushRequests.MessageWithLimitConfig(maxInflightPushRequestsFlag, "the write request has been rejected because the ingester exceeded the allowed number of inflight push requests"))
+	errMaxIngestionRateReached    = errors.New(globalerror.IngesterMaxIngestionRate.MessageWithLimitConfig("the write request has been rejected because the ingester exceeded the samples ingestion rate limit", maxIngestionRateFlag))
+	errMaxTenantsReached          = errors.New(globalerror.IngesterMaxTenants.MessageWithLimitConfig("the write request has been rejected because the ingester exceeded the allowed number of tenants", maxInMemoryTenantsFlag))
+	errMaxInMemorySeriesReached   = errors.New(globalerror.IngesterMaxInMemorySeries.MessageWithLimitConfig("the write request has been rejected because the ingester exceeded the allowed number of in-memory series", maxInMemorySeriesFlag))
+	errMaxInflightRequestsReached = errors.New(globalerror.IngesterMaxInflightPushRequests.MessageWithLimitConfig("the write request has been rejected because the ingester exceeded the allowed number of inflight push requests", maxInflightPushRequestsFlag))
 )
 
 // InstanceLimits describes limits used by ingester. Reaching any of these will result in Push method to return
@@ -48,10 +49,10 @@ func (l *InstanceLimits) RegisterFlags(f *flag.FlagSet) {
 var defaultInstanceLimits *InstanceLimits = nil
 
 // UnmarshalYAML implements the yaml.Unmarshaler interface. If give
-func (l *InstanceLimits) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (l *InstanceLimits) UnmarshalYAML(value *yaml.Node) error {
 	if defaultInstanceLimits != nil {
 		*l = *defaultInstanceLimits
 	}
 	type plain InstanceLimits // type indirection to make sure we don't go into recursive loop
-	return unmarshal((*plain)(l))
+	return value.DecodeWithOptions((*plain)(l), yaml.DecodeOptions{KnownFields: true})
 }

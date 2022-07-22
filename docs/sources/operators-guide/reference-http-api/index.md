@@ -2,7 +2,7 @@
 title: "Reference: Grafana Mimir HTTP API"
 menuTitle: "Reference: HTTP API"
 description: "Use the HTTP API to write and query time-series data and operate a Grafana Mimir cluster."
-weight: 100
+weight: 120
 keywords:
   - Mimir API
   - Mimir endpoints
@@ -32,6 +32,7 @@ This document groups API endpoints by service. Note that the API endpoints are e
 | [Pprof](#pprof)                                                                       | _All services_          | `GET /debug/pprof`                                                        |
 | [Fgprof](#fgprof)                                                                     | _All services_          | `GET /debug/fgprof`                                                       |
 | [Build information](#build-information)                                               | _All services_          | `GET /api/v1/status/buildinfo`                                            |
+| [Memberlist cluster](#memberlist-cluster)                                             | _All services_          | `GET /memberlist`                                                         |
 | [Remote write](#remote-write)                                                         | Distributor             | `POST /api/v1/push`                                                       |
 | [Tenants stats](#tenants-stats)                                                       | Distributor             | `GET /distributor/all_user_stats`                                         |
 | [HA tracker status](#ha-tracker-status)                                               | Distributor             | `GET /distributor/ha_tracker`                                             |
@@ -76,6 +77,9 @@ This document groups API endpoints by service. Note that the API endpoints are e
 | [Store-gateway tenants](#store-gateway-tenants)                                       | Store-gateway           | `GET /store-gateway/tenants`                                              |
 | [Store-gateway tenant blocks](#store-gateway-tenant-blocks)                           | Store-gateway           | `GET /store-gateway/tenant/{tenant}/blocks`                               |
 | [Compactor ring status](#compactor-ring-status)                                       | Compactor               | `GET /compactor/ring`                                                     |
+| [Start block upload](#start-block-upload)                                             | Compactor               | `POST /api/v1/upload/block/{block}/start`                                 |
+| [Upload block file](#upload-block-file)                                               | Compactor               | `POST /api/v1/upload/block/{block}/files?path={path}`                     |
+| [Complete block upload](#complete-block-upload)                                       | Compactor               | `POST /api/v1/upload/block/{block}/finish`                                |
 
 ### Path prefixes
 
@@ -94,7 +98,7 @@ If you disable multi-tenancy, Grafana Mimir doesn't require any request to inclu
 
 Multi-tenancy can be enabled and disabled via the `-auth.multitenancy-enabled` flag or its respective YAML configuration option.
 
-For more information about authentication and authorization, refer to [Authentication and Authorization]({{< relref "../securing/authentication-and-authorization.md" >}}).
+For more information about authentication and authorization, refer to [Authentication and Authorization]({{< relref "../secure/authentication-and-authorization.md" >}}).
 
 ## All services
 
@@ -138,7 +142,7 @@ This endpoint displays the default configuration values.
 GET /runtime_config
 ```
 
-This endpoint displays the [runtime configuration]({{< relref "../configuring/about-runtime-configuration.md" >}}) currently applied to Grafana Mimir, in YAML format, including default values.
+This endpoint displays the [runtime configuration]({{< relref "../configure/about-runtime-configuration.md" >}}) currently applied to Grafana Mimir, in YAML format, including default values.
 The endpoint is only available if Grafana Mimir is configured with the `-runtime-config.file` option.
 
 #### Different modes
@@ -207,6 +211,18 @@ GET <alertmanager-http-prefix>/api/v1/status/buildinfo
 ```
 
 This endpoint returns in JSON format information about the build and enabled features. The format returned is not identical, but is similar to the [Prometheus Build Information endpoint](https://prometheus.io/docs/prometheus/latest/querying/api/#build-information).
+
+### Memberlist cluster
+
+```
+GET /memberlist
+```
+
+This admin page shows information about Memberlist cluster (list of nodes and their health) and KV store (keys and values in the KV store).
+
+If memberlist message history is enabled, this page also shows all received and sent messages stored in the buffers.
+This can be useful for troubleshooting memberlist cluster.
+To enable message history buffers use `-memberlist.message-history-buffer-bytes` CLI flag or the corresponding YAML configuration parameter.
 
 ## Distributor
 
@@ -552,12 +568,6 @@ Requires [authentication](#authentication).
 
 ```
 GET <prometheus-http-prefix>/config/v1/rules
-
-# Deprecated; will be removed in Mimir v2.2.0
-GET /api/v1/rules
-
-# Deprecated; will be removed in Mimir v2.2.0
-GET <prometheus-http-prefix>/rules
 ```
 
 List all rules configured for the authenticated tenant. This endpoint returns a YAML dictionary with all the rule groups for each namespace and `200` status code on success.
@@ -620,12 +630,6 @@ Requires [authentication](#authentication).
 
 ```
 GET <prometheus-http-prefix>/config/v1/rules/{namespace}
-
-# Deprecated; will be removed in Mimir v2.2.0
-GET /api/v1/rules/{namespace}
-
-# Deprecated; will be removed in Mimir v2.2.0
-GET <prometheus-http-prefix>/rules/{namespace}
 ```
 
 Returns the rule groups defined for a given namespace.
@@ -657,12 +661,6 @@ rules:
 
 ```
 GET <prometheus-http-prefix>/config/v1/rules/{namespace}/{groupName}
-
-# Deprecated; will be removed in Mimir v2.2.0
-GET /api/v1/rules/{namespace}/{groupName}
-
-# Deprecated; will be removed in Mimir v2.2.0
-GET <prometheus-http-prefix>/rules/{namespace}/{groupName}
 ```
 
 Returns the rule group matching the request namespace and group name.
@@ -675,12 +673,6 @@ Requires [authentication](#authentication).
 
 ```
 POST /<prometheus-http-prefix>/config/v1/rules/{namespace}
-
-# Deprecated; will be removed in Mimir v2.2.0
-POST /api/v1/rules/{namespace}
-
-# Deprecated; will be removed in Mimir v2.2.0
-POST <prometheus-http-prefix>/rules/{namespace}
 ```
 
 Creates or updates a rule group.
@@ -705,64 +697,10 @@ rules:
       severity: warning
 ```
 
-#### Federated rule groups
-
-A federated rule groups is a rule group with a non-empty `source_tenants`.
-
-The `source_tenants` field allows aggregating data from multiple tenants while evaluating a rule group. The expressions
-of each rule in the group will be evaluated against the data of all tenants in `source_tenants`. If `source_tenants` is
-empty or omitted, then the tenant under which the group is created will be treated as the `source_tenant`.
-
-Federated rule groups are skipped during evaluation by default. This feature depends on
-the cross-tenant query federation feature. To enable federated rules
-set `-ruler.tenant-federation.enabled=true` and `-tenant-federation.enabled=true` CLI flags (or their respective YAML
-config options).
-
-During evaluation query limits applied to single tenants are also applied to each query in the rule group. For example,
-if `tenant-a` has a federated rule group with `source_tenants: [tenant-b, tenant-c]`, then query limits for `tenant-b`
-and `tenant-c` will be applied. If any of these limits is exceeded, the whole evaluation will fail. No partial results
-will be saved. The same "no partial results" guarantee applies to queries failing for other reasons (e.g. ingester
-unavailability).
-
-The time series used during evaluation of federated rules will have the `__tenant_id__` label, similar to how it is
-present on series returned with cross-tenant query federation.
-
-**Considerations:** Federated rule groups allow data from multiple source tenants to be written into a single
-destination tenant. This makes the existing separation of tenants' data less clear. For example, `tenant-a` has a
-federated rule group that aggregates over `tenant-b`'s data (e.g. `sum(metric_b)`) and writes the result back
-into `tenant-a`'s storage (e.g. as metric `sum:metric_b`). Now part of `tenant-b`'s data is copied to `tenant-a` (albeit
-aggregated). Have this in mind when configuring the access control layer in front of mimir and when enabling federated
-rules via `-ruler.tenant-federation.enabled`.
-
-#### Example "federated rules group" request body
-
-```yaml
-name: <string>
-interval: <duration;optional>
-source_tenants:
-  - <string>
-rules:
-  - record: <string>
-    expr: <string>
-  - alert: <string>
-    expr: <string>
-    for: <duration>
-    annotations:
-      <annotation_name>: <string>
-    labels:
-      <label_name>: <string>
-```
-
 ### Delete rule group
 
 ```
 DELETE /<prometheus-http-prefix>/config/v1/rules/{namespace}/{groupName}
-
-# Deprecated; will be removed in Mimir v2.2.0
-DELETE /api/v1/rules/{namespace}/{groupName}
-
-# Deprecated; will be removed in Mimir v2.2.0
-DELETE <prometheus-http-prefix>/rules/{namespace}/{groupName}
 ```
 
 Deletes a rule group by namespace and group name. This endpoints returns `202` on success.
@@ -775,12 +713,6 @@ Requires [authentication](#authentication).
 
 ```
 DELETE /<prometheus-http-prefix>/config/v1/rules/{namespace}
-
-# Deprecated; will be removed in Mimir v2.2.0
-DELETE /api/v1/rules/{namespace}
-
-# Deprecated; will be removed in Mimir v2.2.0
-DELETE <prometheus-http-prefix>/rules/{namespace}
 ```
 
 Deletes all the rule groups in a namespace (including the namespace itself). This endpoint returns `202` on success.
@@ -974,3 +906,64 @@ GET /compactor/ring
 ```
 
 Displays a web page with the compactor hash ring status, including the state, healthy and last heartbeat time of each compactor.
+
+### Start block upload
+
+```
+POST /api/v1/upload/block/{block}/start
+```
+
+Starts the uploading of a TSDB block with a given ID to object storage. The client should send the block's
+`meta.json` file as the request body. If the complete block already exists in object storage, a
+`409` (Conflict) status code gets returned. If the provided `meta.json` file is invalid, a `400` (Bad Request)
+status code gets returned. If the block's max time is before the tenant's retention period, a
+`422` (Unprocessable Entity) status code gets returned.
+
+The provided `meta.json` file must have a `thanos.files` section with the list of the block's files,
+otherwise the request will be rejected.
+
+If the API request succeeds, a sanitized version of the block's `meta.json` file gets uploaded to object storage as
+`uploading-meta.json`, and a `200` status code gets returned. Then you can start uploading files, and once
+done, you can request completion of the block upload.
+
+Requires [authentication](#authentication).
+
+### Upload block file
+
+```
+POST /api/v1/upload/block/{block}/files?path={path}
+```
+
+Uploads a file with a given path, for a block with a given ID. The file path has to be one of the following,
+otherwise a `400` (Bad Request) status code gets returned:
+
+- `index`
+- `chunks/<6-digit number>`
+
+The client must send the content of the file as the body of the request; if the body is empty, a
+`400` (Bad Request) status code gets returned. If the complete block already exists in object storage,
+a `409` (Conflict) status code gets returned. If an in-flight meta file (`uploading-meta.json`) doesn't
+exist in object storage for the block in question, a `404` (Not Found) status code gets returned.
+
+If the API request succeeds, the file gets uploaded with the given path to the block's directory in object storage,
+and a `200` status code gets returned.
+
+Requires [authentication](#authentication).
+
+### Complete block upload
+
+```
+POST /api/v1/upload/block/{block}/finish
+```
+
+Completes the uploading of a TSDB block with a given ID to object storage. If the complete block already
+exists in object storage, a `409` (Conflict) status code gets returned. If an in-flight meta file
+(`uploading-meta.json`) doesn't exist in object storage for the block in question, a `404` (Not Found)
+status code gets returned.
+
+If the API request succeeds, the in-flight meta file gets renamed to `meta.json` in the block's directory in
+object storage, so the block is considered complete, and a `200` status code gets returned.
+
+Requires [authentication](#authentication).
+
+This API endpoint is experimental and subject to change.

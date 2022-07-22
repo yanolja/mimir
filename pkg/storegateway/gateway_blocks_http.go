@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
-	"net/url"
 	"strconv"
 	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/prometheus/prometheus/model/labels"
+	prom_tsdb "github.com/prometheus/prometheus/tsdb"
 	"github.com/thanos-io/thanos/pkg/block/metadata"
 
 	"github.com/grafana/mimir/pkg/storage/tsdb"
@@ -30,21 +30,15 @@ type blocksPageContents struct {
 	RichMetas       []richMeta           `json:"metas"`
 	FormattedBlocks []formattedBlockData `json:"-"`
 	ShowDeleted     bool                 `json:"-"`
-	ShowSplitCount  bool                 `json:"-"`
 	ShowSources     bool                 `json:"-"`
 	ShowParents     bool                 `json:"-"`
-
-	ShowDeletedQuery string `json:"-"`
-	ShowSourcesQuery string `json:"-"`
-	ShowParentsQuery string `json:"-"`
-
-	TSDBTenantIDExternalLabel string `json:"-"`
+	SplitCount      int                  `json:"-"`
 }
 
 type formattedBlockData struct {
 	ULID            string
 	ULIDTime        string
-	SplitCount      *uint32
+	SplitID         *uint32
 	MinTime         string
 	MaxTime         string
 	Duration        string
@@ -54,6 +48,7 @@ type formattedBlockData struct {
 	Labels          string
 	Sources         []string
 	Parents         []string
+	Stats           prom_tsdb.BlockStats
 }
 
 type richMeta struct {
@@ -75,16 +70,14 @@ func (s *StoreGateway) BlocksHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	showDeleted := req.Form.Get("show_deleted") == "true"
-	showSources := req.Form.Get("show_sources") == "true"
-	showParents := req.Form.Get("show_parents") == "true"
+	showDeleted := req.Form.Get("show_deleted") == "on"
+	showSources := req.Form.Get("show_sources") == "on"
+	showParents := req.Form.Get("show_parents") == "on"
 	var splitCount int
 	if sc := req.Form.Get("split_count"); sc != "" {
-		var err error
-		splitCount, err = strconv.Atoi(sc)
-		if err != nil {
-			util.WriteTextResponse(w, fmt.Sprintf("Bad split_count param: %s", err))
-			return
+		splitCount, _ = strconv.Atoi(sc)
+		if splitCount < 0 {
+			splitCount = 0
 		}
 	}
 
@@ -119,16 +112,17 @@ func (s *StoreGateway) BlocksHandler(w http.ResponseWriter, req *http.Request) {
 		formattedBlocks = append(formattedBlocks, formattedBlockData{
 			ULID:            m.ULID.String(),
 			ULIDTime:        util.TimeFromMillis(int64(m.ULID.Time())).UTC().Format(time.RFC3339),
-			SplitCount:      blockSplitID,
+			SplitID:         blockSplitID,
 			MinTime:         util.TimeFromMillis(m.MinTime).UTC().Format(time.RFC3339),
 			MaxTime:         util.TimeFromMillis(m.MaxTime).UTC().Format(time.RFC3339),
 			Duration:        util.TimeFromMillis(m.MaxTime).Sub(util.TimeFromMillis(m.MinTime)).String(),
 			DeletedTime:     formatTimeIfNotZero(deletedTimes[m.ULID].UTC(), time.RFC3339),
 			CompactionLevel: m.Compaction.Level,
 			BlockSize:       listblocks.GetFormattedBlockSize(m),
-			Labels:          lbls.WithoutLabels(tsdb.TenantIDExternalLabel).String(),
+			Labels:          lbls.String(),
 			Sources:         sources,
 			Parents:         parents,
+			Stats:           m.Stats,
 		})
 		var deletedAt *int64
 		if dt, ok := deletedTimes[m.ULID]; ok {
@@ -148,29 +142,11 @@ func (s *StoreGateway) BlocksHandler(w http.ResponseWriter, req *http.Request) {
 		RichMetas:       richMetas,
 		FormattedBlocks: formattedBlocks,
 
-		ShowSplitCount: splitCount > 0,
-		ShowDeleted:    showDeleted,
-		ShowSources:    showSources,
-		ShowParents:    showParents,
-
-		ShowDeletedQuery: queryWithTrueBoolParam(*req.URL, req.Form, "show_deleted"),
-		ShowSourcesQuery: queryWithTrueBoolParam(*req.URL, req.Form, "show_sources"),
-		ShowParentsQuery: queryWithTrueBoolParam(*req.URL, req.Form, "show_parents"),
-
-		TSDBTenantIDExternalLabel: tsdb.TenantIDExternalLabel,
+		SplitCount:  splitCount,
+		ShowDeleted: showDeleted,
+		ShowSources: showSources,
+		ShowParents: showParents,
 	}, blocksPageTemplate, req)
-}
-
-func queryWithTrueBoolParam(u url.URL, form url.Values, boolParam string) string {
-	q := u.Query()
-	for k, vs := range form {
-		for _, val := range vs {
-			// Yes, we set only the last value, but otherwise the logic just gets too complicated.
-			q.Set(k, val)
-		}
-	}
-	q.Set(boolParam, "true")
-	return "?" + q.Encode()
 }
 
 func formatTimeIfNotZero(t time.Time, format string) string {

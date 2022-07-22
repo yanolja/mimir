@@ -280,13 +280,13 @@ func (c *BucketCompactor) runCompactionJob(ctx context.Context, job *Job) (shoul
 
 	defer func() {
 		elapsed := time.Since(jobBeginTime)
-		level.Info(jobLogger).Log("msg", "compaction job finished", "success", rerr == nil, "duration", elapsed, "duration_ms", elapsed.Milliseconds())
 
-		// Leave the compact directory for inspection if it is a halt error
-		// or if it is not then so that possibly we would not have to download everything again.
-		if rerr != nil {
-			return
+		if rerr == nil {
+			level.Info(jobLogger).Log("msg", "compaction job succeeded", "duration", elapsed, "duration_ms", elapsed.Milliseconds())
+		} else {
+			level.Error(jobLogger).Log("msg", "compaction job failed", "duration", elapsed, "duration_ms", elapsed.Milliseconds(), "err", rerr)
 		}
+
 		if err := os.RemoveAll(subDir); err != nil {
 			level.Error(jobLogger).Log("msg", "failed to remove compaction group work directory", "path", subDir, "err", err)
 		}
@@ -427,7 +427,7 @@ func (c *BucketCompactor) runCompactionJob(ctx context.Context, job *Job) (shoul
 		}
 
 		begin := time.Now()
-		if err := block.Upload(ctx, jobLogger, c.bkt, bdir, job.hashFunc); err != nil {
+		if err := mimit_tsdb.UploadBlock(ctx, jobLogger, c.bkt, bdir, nil); err != nil {
 			return errors.Wrapf(err, "upload of %s failed", blockToUpload.ulid)
 		}
 
@@ -562,7 +562,7 @@ func RepairIssue347(ctx context.Context, logger log.Logger, bkt objstore.Bucket,
 	}
 
 	level.Info(logger).Log("msg", "uploading repaired block", "newID", resid)
-	if err = block.Upload(ctx, logger, bkt, filepath.Join(tmpdir, resid.String()), metadata.NoneFunc); err != nil {
+	if err = mimit_tsdb.UploadBlock(ctx, logger, bkt, filepath.Join(tmpdir, resid.String()), nil); err != nil {
 		return errors.Wrapf(err, "upload of %s failed", resid)
 	}
 

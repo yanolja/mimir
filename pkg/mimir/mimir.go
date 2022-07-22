@@ -6,14 +6,13 @@
 package mimir
 
 import (
-	"bytes"
 	"context"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
-	"reflect"
 	"strconv"
+	"strings"
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
@@ -32,7 +31,7 @@ import (
 	"github.com/weaveworks/common/server"
 	"github.com/weaveworks/common/signals"
 	"google.golang.org/grpc/health/grpc_health_v1"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 
 	"github.com/grafana/dskit/tenant"
 
@@ -116,6 +115,8 @@ type Config struct {
 	RuntimeConfig       runtimeconfig.Config                       `yaml:"runtime_config"`
 	MemberlistKV        memberlist.KVConfig                        `yaml:"memberlist"`
 	QueryScheduler      scheduler.Config                           `yaml:"query_scheduler"`
+
+	Common CommonConfig `yaml:"common"`
 }
 
 // RegisterFlags registers flag.
@@ -123,6 +124,7 @@ func (c *Config) RegisterFlags(f *flag.FlagSet, logger log.Logger) {
 	c.ApplicationName = "Grafana Mimir"
 	c.Server.MetricsNamespace = "cortex"
 	c.Server.ExcludeRequestInLog = true
+	c.Server.DisableRequestSuccessLog = true
 
 	// Set the default module list to 'all'
 	c.Target = []string{All}
@@ -138,7 +140,7 @@ func (c *Config) RegisterFlags(f *flag.FlagSet, logger log.Logger) {
 	c.API.RegisterFlags(f)
 	c.registerServerFlagsWithChangedDefaultValues(f)
 	c.Distributor.RegisterFlags(f, logger)
-	c.Querier.RegisterFlags(f)
+	c.Querier.RegisterFlags(f, logger)
 	c.IngesterClient.RegisterFlags(f)
 	c.Ingester.RegisterFlags(f, logger)
 	c.Flusher.RegisterFlags(f)
@@ -158,15 +160,38 @@ func (c *Config) RegisterFlags(f *flag.FlagSet, logger log.Logger) {
 	c.MemberlistKV.RegisterFlags(f)
 	c.ActivityTracker.RegisterFlags(f)
 	c.QueryScheduler.RegisterFlags(f)
+
+	c.Common.RegisterFlags(f)
+}
+
+func (c *Config) CommonConfigInheritance() CommonConfigInheritance {
+	return CommonConfigInheritance{
+		Storage: map[string]*bucket.StorageBackendConfig{
+			"blocks_storage":       &c.BlocksStorage.Bucket.StorageBackendConfig,
+			"ruler_storage":        &c.RulerStorage.StorageBackendConfig,
+			"alertmanager_storage": &c.AlertmanagerStorage.StorageBackendConfig,
+		},
+	}
+}
+
+// ConfigWithCommon should be passed to yaml.Unmarshal to properly unmarshal Common values.
+// We don't implement UnmarshalYAML on Config itself because that would disallow inlining it in other configs.
+type ConfigWithCommon Config
+
+func (c *ConfigWithCommon) UnmarshalYAML(value *yaml.Node) error {
+	if err := UnmarshalCommonYAML(value, (*Config)(c)); err != nil {
+		return err
+	}
+
+	// Then unmarshal config in a standard way.
+	// This will override previously set common values by the specific ones, if they're provided.
+	// (YAML specific takes precedence over YAML common)
+	return value.DecodeWithOptions((*Config)(c), yaml.DecodeOptions{KnownFields: true})
 }
 
 // Validate the mimir config and return an error if the validation
 // doesn't pass
 func (c *Config) Validate(log log.Logger) error {
-	if err := c.validateYAMLEmptyNodes(); err != nil {
-		return err
-	}
-
 	if err := c.validateBucketConfigs(); err != nil {
 		return fmt.Errorf("%w: %s", errInvalidBucketConfig, err)
 	}
@@ -204,7 +229,7 @@ func (c *Config) Validate(log log.Logger) error {
 		return errors.Wrap(err, "invalid alertmanager storage config")
 	}
 	if c.isModuleEnabled(AlertManager) {
-		if err := c.Alertmanager.Validate(c.AlertmanagerStorage); err != nil {
+		if err := c.Alertmanager.Validate(); err != nil {
 			return errors.Wrap(err, "invalid alertmanager config")
 		}
 	}
@@ -223,33 +248,6 @@ func (c *Config) isAnyModuleEnabled(modules ...string) bool {
 	}
 
 	return false
-}
-
-// validateYAMLEmptyNodes ensure that no empty node has been specified in the YAML config file.
-// When an empty node is defined in YAML, the YAML parser sets the whole struct to its zero value
-// and so we loose all default values. It's very difficult to detect this case for the user, so we
-// try to prevent it (on the root level) with this custom validation.
-func (c *Config) validateYAMLEmptyNodes() error {
-	defaults := Config{}
-	flagext.DefaultValues(&defaults)
-
-	defStruct := reflect.ValueOf(defaults)
-	cfgStruct := reflect.ValueOf(*c)
-
-	// We expect all structs are the exact same. This check should never fail.
-	if cfgStruct.NumField() != defStruct.NumField() {
-		return errors.New("unable to validate configuration because of mismatching internal config data structure")
-	}
-
-	for i := 0; i < cfgStruct.NumField(); i++ {
-		// If the struct has been reset due to empty YAML value and the zero struct value
-		// doesn't match the default one, then we should warn the user about the issue.
-		if cfgStruct.Field(i).Kind() == reflect.Struct && cfgStruct.Field(i).IsZero() && !defStruct.Field(i).IsZero() {
-			return fmt.Errorf("the %s configuration in YAML has been specified as an empty YAML node", cfgStruct.Type().Field(i).Name)
-		}
-	}
-
-	return nil
 }
 
 func (c *Config) validateBucketConfigs() error {
@@ -273,20 +271,24 @@ func validateBucketConfig(cfg bucket.Config, blockStorageBucketCfg bucket.Config
 		return nil
 	}
 
+	if cfg.StoragePrefix != blockStorageBucketCfg.StoragePrefix {
+		return nil
+	}
+
 	switch cfg.Backend {
 	case bucket.S3:
 		if cfg.S3.BucketName == blockStorageBucketCfg.S3.BucketName {
-			return errors.New("S3 bucket name cannot be the same as the one used in blocks storage config")
+			return errors.New("S3 bucket name and storage prefix cannot be the same as the one used in blocks storage config")
 		}
 
 	case bucket.GCS:
 		if cfg.GCS.BucketName == blockStorageBucketCfg.GCS.BucketName {
-			return errors.New("GCS bucket name cannot be the same as the one used in blocks storage config")
+			return errors.New("GCS bucket name and storage prefix cannot be the same as the one used in blocks storage config")
 		}
 
 	case bucket.Azure:
 		if cfg.Azure.ContainerName == blockStorageBucketCfg.Azure.ContainerName && cfg.Azure.StorageAccountName == blockStorageBucketCfg.Azure.StorageAccountName {
-			return errors.New("Azure container and account names cannot be the same as the ones used in blocks storage config")
+			return errors.New("Azure container and account names and storage prefix cannot be the same as the ones used in blocks storage config")
 		}
 
 	// To keep it simple here we only check that container and project names are not the same.
@@ -295,7 +297,7 @@ func validateBucketConfig(cfg bucket.Config, blockStorageBucketCfg bucket.Config
 	// may have several configured endpoints.
 	case bucket.Swift:
 		if cfg.Swift.ContainerName == blockStorageBucketCfg.Swift.ContainerName && cfg.Swift.ProjectName == blockStorageBucketCfg.Swift.ProjectName {
-			return errors.New("Swift container and project names cannot be the same as the ones used in blocks storage config")
+			return errors.New("Swift container and project names and storage prefix cannot be the same as the ones used in blocks storage config")
 		}
 	}
 	return nil
@@ -305,30 +307,144 @@ func (c *Config) registerServerFlagsWithChangedDefaultValues(fs *flag.FlagSet) {
 	throwaway := flag.NewFlagSet("throwaway", flag.PanicOnError)
 
 	// Register to throwaway flags first. Default values are remembered during registration and cannot be changed,
-	// but we can take values from throwaway flag set and reregister into supplied flags with new default values.
+	// but we can take values from throwaway flag set and re-register into supplied flag set with new default values.
 	c.Server.RegisterFlags(throwaway)
 
+	defaultsOverrides := map[string]string{
+		"server.grpc.keepalive.min-time-between-pings":      "10s",
+		"server.grpc.keepalive.ping-without-stream-allowed": "true",
+		"server.http-listen-port":                           "8080",
+		"server.grpc-max-recv-msg-size-bytes":               strconv.Itoa(100 * 1024 * 1024),
+		"server.grpc-max-send-msg-size-bytes":               strconv.Itoa(100 * 1024 * 1024),
+	}
+
 	throwaway.VisitAll(func(f *flag.Flag) {
-		// Ignore errors when setting new values. We have a test to verify that it works.
-		switch f.Name {
-		case "server.grpc.keepalive.min-time-between-pings":
-			_ = f.Value.Set("10s")
-
-		case "server.grpc.keepalive.ping-without-stream-allowed":
-			_ = f.Value.Set("true")
-
-		case "server.http-listen-port":
-			_ = f.Value.Set("8080")
-
-		case "server.grpc-max-recv-msg-size-bytes":
-			_ = f.Value.Set(strconv.Itoa(100 * 1024 * 1024))
-
-		case "server.grpc-max-send-msg-size-bytes":
-			_ = f.Value.Set(strconv.Itoa(100 * 1024 * 1024))
+		if defaultValue, overridden := defaultsOverrides[f.Name]; overridden {
+			// Ignore errors when setting new values. We have a test to verify that it works.
+			_ = f.Value.Set(defaultValue)
 		}
 
 		fs.Var(f.Value, f.Name, f.Usage)
 	})
+}
+
+// CommonConfigInheriter abstracts config that inherit common config values.
+type CommonConfigInheriter interface {
+	CommonConfigInheritance() CommonConfigInheritance
+}
+
+// UnmarshalCommonYAML provides the implementation for UnmarshalYAML functions to unmarshal the CommonConfig.
+// A list of CommonConfig inheriters can be provided
+func UnmarshalCommonYAML(value *yaml.Node, inheriters ...CommonConfigInheriter) error {
+	for _, inh := range inheriters {
+		specificStorageLocations := specificLocationsUnmarshaler{}
+		inheritance := inh.CommonConfigInheritance()
+		for name, loc := range inheritance.Storage {
+			specificStorageLocations[name] = loc
+		}
+
+		common := configWithCustomCommonUnmarshaler{
+			Common: &commonConfigUnmarshaler{
+				Storage: &specificStorageLocations,
+			},
+		}
+
+		if err := value.DecodeWithOptions(&common, yaml.DecodeOptions{KnownFields: true}); err != nil {
+			return fmt.Errorf("can't unmarshal common config: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// InheritCommonFlagValues will inherit the values of the provided common flags to all the inheriters.
+func InheritCommonFlagValues(log log.Logger, fs *flag.FlagSet, common CommonConfig, inheriters ...CommonConfigInheriter) error {
+	setFlags := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
+
+	for _, inh := range inheriters {
+		inheritance := inh.CommonConfigInheritance()
+		for desc, loc := range inheritance.Storage {
+			if err := inheritFlags(log, common.Storage.RegisteredFlags, loc.RegisteredFlags, setFlags); err != nil {
+				return fmt.Errorf("can't inherit common flags for %q: %w", desc, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// inheritFlags takes flags from the origin set and sets them to the equivalent flags in the dest set, unless those are already set.
+func inheritFlags(log log.Logger, orig util.RegisteredFlags, dest util.RegisteredFlags, set map[string]bool) error {
+	for f, o := range orig.Flags {
+		d, ok := dest.Flags[f]
+		if !ok {
+			return fmt.Errorf("implementation error: flag %q was in flags prefixed with %q (%q) but was not in flags prefixed with %q (%q)", f, orig.Prefix, o.Name, dest.Prefix, d.Name)
+		}
+		if !set[o.Name] {
+			// Nothing to inherit because origin was not set.
+			continue
+		}
+		if set[d.Name] {
+			// Can't inherit because destination was set.
+			continue
+		}
+		if o.Value.String() == d.Value.String() {
+			// Already the same, no need to touch.
+			continue
+		}
+		level.Debug(log).Log(
+			"msg", "Inheriting flag value",
+			"origin_flag", o.Name, "origin_value", o.Value,
+			"destination_flag", d.Name, "destination_value", d.Value,
+		)
+		if err := d.Value.Set(o.Value.String()); err != nil {
+			return fmt.Errorf("can't set flag %q to flag's %q value %q: %s", d.Name, o.Name, o.Value, err)
+		}
+	}
+	return nil
+}
+
+type CommonConfig struct {
+	Storage bucket.StorageBackendConfig `yaml:"storage"`
+}
+
+type CommonConfigInheritance struct {
+	Storage map[string]*bucket.StorageBackendConfig
+}
+
+// RegisterFlags registers flag.
+func (c *CommonConfig) RegisterFlags(f *flag.FlagSet) {
+	c.Storage.RegisterFlagsWithPrefix("common.storage.", f)
+}
+
+// configWithCustomCommonUnmarshaler unmarshals config with custom unmarshaler for the `common` field.
+type configWithCustomCommonUnmarshaler struct {
+	// Common will unmarshal `common` yaml key using a custom unmarshaler.
+	Common *commonConfigUnmarshaler `yaml:"common"`
+	// Throwaway will contain the rest of the configuration options,
+	// so we can still use strict unmarshaling for common,
+	// but we won't complain about not knowing the rest of the config keys.
+	Throwaway map[string]interface{} `yaml:",inline"`
+}
+
+// commonConfigUnmarshaler will unmarshal each field of the common config into specific locations.
+type commonConfigUnmarshaler struct {
+	Storage *specificLocationsUnmarshaler `yaml:"storage"`
+}
+
+// specificLocationsUnmarshaler will unmarshal yaml into specific locations.
+// Keys are names (used to provide meaningful errors) and values are references to places
+// where this should be unmarshaled.
+type specificLocationsUnmarshaler map[string]interface{}
+
+func (m specificLocationsUnmarshaler) UnmarshalYAML(value *yaml.Node) error {
+	for l, v := range m {
+		if err := value.DecodeWithOptions(v, yaml.DecodeOptions{KnownFields: true}); err != nil {
+			return fmt.Errorf("key %q: %w", l, err)
+		}
+	}
+	return nil
 }
 
 // Mimir is the root datastructure for Mimir.
@@ -351,6 +467,7 @@ type Mimir struct {
 	RuntimeConfig            *runtimeconfig.Manager
 	QuerierQueryable         prom_storage.SampleAndChunkQueryable
 	ExemplarQueryable        prom_storage.ExemplarQueryable
+	MetadataSupplier         querier.MetadataSupplier
 	QuerierEngine            *promql.Engine
 	QueryFrontendTripperware querymiddleware.Tripperware
 	Ruler                    *ruler.Ruler
@@ -523,15 +640,17 @@ func (t *Mimir) Run() error {
 func (t *Mimir) readyHandler(sm *services.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !sm.IsHealthy() {
-			msg := bytes.Buffer{}
-			msg.WriteString("Some services are not Running:\n")
-
-			byState := sm.ServicesByState()
-			for st, ls := range byState {
-				msg.WriteString(fmt.Sprintf("%v: %d\n", st, len(ls)))
+			var serviceNamesStates []string
+			for name, s := range t.ServiceMap {
+				if s.State() != services.Running {
+					serviceNamesStates = append(serviceNamesStates, fmt.Sprintf("%s: %s", name, s.State()))
+				}
 			}
 
-			http.Error(w, msg.String(), http.StatusServiceUnavailable)
+			level.Debug(util_log.Logger).Log("msg", "some services are not Running", "services", serviceNamesStates)
+
+			httpResponse := "Some services are not Running:\n" + strings.Join(serviceNamesStates, "\n")
+			http.Error(w, httpResponse, http.StatusServiceUnavailable)
 			return
 		}
 

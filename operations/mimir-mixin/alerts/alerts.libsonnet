@@ -127,7 +127,7 @@
         {
           alert: $.alertName('FrontendQueriesStuck'),
           expr: |||
-            sum by (%s) (cortex_query_frontend_queue_length) > 1
+            sum by (%s, job) (cortex_query_frontend_queue_length) > 1
           ||| % $._config.alert_aggregation_labels,
           'for': '5m',  // We don't want to block for longer.
           labels: {
@@ -135,14 +135,14 @@
           },
           annotations: {
             message: |||
-              There are {{ $value }} queued up queries in %(alert_aggregation_variables)s query-frontend.
+              There are {{ $value }} queued up queries in %(alert_aggregation_variables)s {{ $labels.job }}.
             ||| % $._config,
           },
         },
         {
           alert: $.alertName('SchedulerQueriesStuck'),
           expr: |||
-            sum by (%s) (cortex_query_scheduler_queue_length) > 1
+            sum by (%s, job) (cortex_query_scheduler_queue_length) > 1
           ||| % $._config.alert_aggregation_labels,
           'for': '5m',  // We don't want to block for longer.
           labels: {
@@ -150,7 +150,7 @@
           },
           annotations: {
             message: |||
-              There are {{ $value }} queued up queries in %(alert_aggregation_variables)s query-scheduler.
+              There are {{ $value }} queued up queries in %(alert_aggregation_variables)s {{ $labels.job }}.
             ||| % $._config,
           },
         },
@@ -451,7 +451,9 @@
           alert: $.alertName('AllocatingTooMuchMemory'),
           expr: |||
             (
-              container_memory_working_set_bytes{container="ingester"}
+              # We use RSS instead of working set memory because of the ingester's extensive usage of mmap.
+              # See: https://github.com/grafana/mimir/issues/2466
+              container_memory_rss{container="ingester"}
                 /
               ( container_spec_memory_limit_bytes{container="ingester"} > 0 )
             ) > 0.65
@@ -470,7 +472,9 @@
           alert: $.alertName('AllocatingTooMuchMemory'),
           expr: |||
             (
-              container_memory_working_set_bytes{container="ingester"}
+              # We use RSS instead of working set memory because of the ingester's extensive usage of mmap.
+              # See: https://github.com/grafana/mimir/issues/2466
+              container_memory_rss{container="ingester"}
                 /
               ( container_spec_memory_limit_bytes{container="ingester"} > 0 )
             ) > 0.8
@@ -520,7 +524,7 @@
           ||| % $._config,
           'for': '5m',
           labels: {
-            severity: 'warning',
+            severity: 'critical',
           },
           annotations: {
             message: |||

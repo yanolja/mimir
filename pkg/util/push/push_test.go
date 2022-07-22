@@ -8,16 +8,19 @@ package push
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/gogo/protobuf/proto"
 	"github.com/golang/snappy"
 	"github.com/prometheus/prometheus/prompb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/weaveworks/common/middleware"
+	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 
 	"github.com/grafana/mimir/pkg/mimirpb"
 )
@@ -30,13 +33,33 @@ func TestHandler_remoteWrite(t *testing.T) {
 	assert.Equal(t, 200, resp.Code)
 }
 
-func TestHandler_cortexWriteRequest(t *testing.T) {
+func TestHandler_otlpWrite(t *testing.T) {
+	req := createOTLPRequest(t, createOTLPMetricRequest(t))
+	resp := httptest.NewRecorder()
+	handler := OTLPHandler(100000, nil, false, verifyWriteRequestHandler(t, mimirpb.API))
+	handler.ServeHTTP(resp, req)
+	assert.Equal(t, 200, resp.Code)
+}
+
+func TestHandler_mimirWriteRequest(t *testing.T) {
 	req := createRequest(t, createMimirWriteRequestProtobuf(t, false))
 	resp := httptest.NewRecorder()
 	sourceIPs, _ := middleware.NewSourceIPs("SomeField", "(.*)")
 	handler := Handler(100000, sourceIPs, false, verifyWriteRequestHandler(t, mimirpb.RULE))
 	handler.ServeHTTP(resp, req)
 	assert.Equal(t, 200, resp.Code)
+}
+
+func TestHandler_contextCanceledRequest(t *testing.T) {
+	req := createRequest(t, createMimirWriteRequestProtobuf(t, false))
+	resp := httptest.NewRecorder()
+	sourceIPs, _ := middleware.NewSourceIPs("SomeField", "(.*)")
+	handler := Handler(100000, sourceIPs, false, func(_ context.Context, _ *mimirpb.WriteRequest, cleanup func()) (*mimirpb.WriteResponse, error) {
+		defer cleanup()
+		return nil, fmt.Errorf("the request failed: %w", context.Canceled)
+	})
+	handler.ServeHTTP(resp, req)
+	assert.Equal(t, 499, resp.Code)
 }
 
 func TestHandler_EnsureSkipLabelNameValidationBehaviour(t *testing.T) {
@@ -162,6 +185,26 @@ func createRequest(t testing.TB, protobuf []byte) *http.Request {
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	req.Header.Set("X-Prometheus-Remote-Write-Version", "0.1.0")
 	return req
+}
+
+func createOTLPRequest(t testing.TB, metricRequest pmetricotlp.Request) *http.Request {
+	t.Helper()
+
+	rawBytes, err := metricRequest.MarshalProto()
+	require.NoError(t, err)
+
+	req, err := http.NewRequest("POST", "http://localhost/", bytes.NewReader(rawBytes))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	return req
+}
+
+func createOTLPMetricRequest(t testing.TB) pmetricotlp.Request {
+	input := createPrometheusRemoteWriteProtobuf(t)
+	prwReq := &prompb.WriteRequest{}
+	require.NoError(t, proto.Unmarshal(input, prwReq))
+
+	return TimeseriesToOTLPRequest(prwReq.Timeseries)
 }
 
 func createPrometheusRemoteWriteProtobuf(t testing.TB) []byte {

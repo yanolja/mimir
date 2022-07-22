@@ -9,7 +9,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 func mustNewCustomTrackersConfigFromMap(t *testing.T, source map[string]string) CustomTrackersConfig {
@@ -203,5 +203,23 @@ func TestTrackersConfigs_Deserialization(t *testing.T) {
 		config := CustomTrackersConfig{}
 		err := yaml.Unmarshal([]byte(malformedInput), &config)
 		assert.Error(t, err, "should not deserialize malformed input")
+	})
+}
+
+func TestTrackersConfigs_SerializeDeserialize(t *testing.T) {
+	sourceYAML := `
+    baz: "{baz='bar'}"
+    foo: "{foo='bar'}"
+    `
+
+	obj := mustNewCustomTrackersConfigDeserializedFromYaml(t, sourceYAML)
+
+	t.Run("ShouldSerializeDeserializeResultsTheSame", func(t *testing.T) {
+		out, err := yaml.Marshal(obj)
+		require.NoError(t, err, "failed do serialize Custom trackers config")
+		reSerialized := CustomTrackersConfig{}
+		err = yaml.Unmarshal(out, &reSerialized)
+		require.NoError(t, err, "Failed to deserialize serialized object")
+		assert.Equal(t, obj, reSerialized)
 	})
 }

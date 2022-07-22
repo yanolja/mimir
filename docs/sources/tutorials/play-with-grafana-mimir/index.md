@@ -35,7 +35,7 @@ In this tutorial, you'll:
 ## Prerequisites
 
 - Git
-- Docker and Docker Compose
+- [Docker](https://docs.docker.com/) and [Docker Compose](https://docs.docker.com/compose/)
 - Availability of both ports `9000` and `9009` on your host machine
 
 ## Download tutorial configuration
@@ -57,7 +57,7 @@ In this tutorial, you'll:
 Start running your local setup with the following Docker command:
 
 ```bash
-docker-compose up
+docker-compose up -d
 ```
 
 This command starts:
@@ -92,15 +92,15 @@ and health of your Grafana Mimir cluster. The dashboards query Grafana Mimir for
 
 To start, we recommend looking at these dashboards:
 
-- [Writes](http://localhost:9000/d/0156f6d15aa234d452a33a4f13c838e3/mimir-writes)
-- [Reads](http://localhost:9000/d/8d6ba60eccc4b6eedfa329b24b1bd339/mimir-reads)
-- [Queries](http://localhost:9000/d/d9931b1054053c8b972d320774bb8f1d/mimir-queries)
-- [Object store](http://localhost:9000/d/d5a3a4489d57c733b5677fb55370a723/mimir-object-store)
+- [Writes](http://localhost:9000/d/8280707b8f16e7b87b840fc1cc92d4c5/mimir-writes)
+- [Reads](http://localhost:9000/d/e327503188913dc38ad571c647eef643/mimir-reads)
+- [Queries](http://localhost:9000/d/b3abe8d5c040395cc36615cb4334c92d/mimir-queries)
+- [Object Store](http://localhost:9000/d/e1324ee2a434f4158c00a9ee279d3292/mimir-object-store)
 
 A couple of caveats:
 
 - It typically takes a few minutes after Grafana Mimir starts to display meaningful metrics in the dashboards.
-- Because this tutorial runs Grafana Mimir without any ingress gateway, query-scheduler, or memcached, the related panels are expected to be empty.
+- Because this tutorial runs Grafana Mimir without any query-scheduler, or memcached, the related panels are expected to be empty.
 
 The dashboards installed in the Grafana are taken from the Grafana Mimir mixin which packages up Grafana Labs' best practice dashboards, recording rules, and alerts for monitoring Grafana Mimir. To learn more about the mixin, check out the Grafana Mimir mixin documentation. To learn more about how Grafana is connecting to Grafana Mimir, review the [Mimir datasource](http://localhost:9000/datasources).
 
@@ -111,16 +111,15 @@ as a new set of time series. In this section you're going to configure a recordi
 offered by Grafana.
 
 1. Open [Grafana Alerting](http://localhost:9000/alerting/list).
-1. Click "New alert rule", which also allows you to configure recording rules.
-1. Configure the recording rule:
-   1. Type `sum:up` in the "Rule name" field.
-   1. Choose `Cortex managed recording rule` in the "Rule type" field. Make sure to select "managed recording rule" and not
-      "managed alert rule."
-   1. Choose `Mimir` in the "Select data source" field.
-   1. Type `example-namespace` in the "Namespace" field.
-   1. Type `example-group` in the "Group" field.
-   1. Type `sum(up)` in the "Create a query to be recorded" field.
-   1. From the upper-right corner, click the **Save and Exit** button.
+2. Click "New alert rule", which also allows you to configure recording rules.
+3. Configure the recording rule:
+   1. Select `Mimir or Loki recording rule` in the top selector.
+   2. Choose `Mimir` in the "Select data source" field.
+   3. Type `sum(up)` in the "Metrics browser" query field.
+   4. Type `sum:up` in the "Rule name" field.
+   5. Type `example-namespace` in the "Namespace" field.
+   6. Type `example-group` in the "Group" field.
+   7. From the upper-right corner, click the **Save and exit** button.
 
 Your `sum:up` recording rule will show the number of Mimir instances that are `up`, meaning reachable to be scraped. The
 rule is now being created in Grafana Mimir ruler and will be soon available for querying:
@@ -139,16 +138,15 @@ alerts to Grafana Mimir Alertmanager. In this section you're going to configure 
 tooling offered by Grafana.
 
 1. Open [Grafana Alerting](http://localhost:9000/alerting/list).
-1. Click to "New alert rule".
-1. Configure the alert rule:
-   1. Type `MimirNotRunning` in the "Rule name" field.
-   1. Choose `Cortex managed alert rule` in the "Rule type" field. Make sure to select "managed alert rule" and not
-      "managed recording rule."
-   1. Choose `Mimir` in the "Select data source" field.
-   1. Select `example-namespace` in the "Namespace" field.
-   1. Select `example-group` in the "Group" field.
-   1. Type `up == 0` in the "Create a query to be alerted on" field.
-   1. From the upper-right corner, click the **Save and Exit** button.
+2. Click to "New alert rule".
+3. Configure the alert rule:
+   1. Select `Mimir or Loki alert` in the top selector.
+   2. Choose `Mimir` in the "Select data source" field.
+   3. Type `up == 0` in the "Metrics browser" query field.
+   4. Type `MimirNotRunning` in the "Rule name" field.
+   5. Select `example-namespace` in the "Namespace" field.
+   6. Select `example-group` in the "Group" field.
+   7. From the upper-right corner, click the **Save and exit** button.
 
 Your `MimirNotRunning` alert rule is now being created in Grafana Mimir ruler and is expected to fire when the number of
 Grafana Mimir instances is less than three. You can check its status by opening the [Grafana Alerting](http://localhost:9000/alerting/list)
@@ -193,5 +191,5 @@ Lastly, you configured a recording rule and an alert via the Grafana Alerting UI
 Once you've completed the tutorial, release all Docker resources by running this Docker command:
 
 ```bash
-docker-compose down
+docker-compose down -v
 ```

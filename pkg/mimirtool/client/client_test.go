@@ -6,6 +6,7 @@
 package client
 
 import (
+	"bytes"
 	"net/http"
 	"net/url"
 	"testing"
@@ -23,66 +24,66 @@ func TestBuildURL(t *testing.T) {
 	}{
 		{
 			name:      "builds the correct URL with a trailing slash",
-			path:      "/api/v1/rules",
+			path:      "/prometheus/config/v1/rules",
 			method:    http.MethodPost,
 			url:       "http://mimirurl.com/",
-			resultURL: "http://mimirurl.com/api/v1/rules",
+			resultURL: "http://mimirurl.com/prometheus/config/v1/rules",
 		},
 		{
 			name:      "builds the correct URL without a trailing slash",
-			path:      "/api/v1/rules",
+			path:      "/prometheus/config/v1/rules",
 			method:    http.MethodPost,
 			url:       "http://mimirurl.com",
-			resultURL: "http://mimirurl.com/api/v1/rules",
+			resultURL: "http://mimirurl.com/prometheus/config/v1/rules",
 		},
 		{
 			name:      "builds the correct URL when the base url has a path",
-			path:      "/api/v1/rules",
+			path:      "/prometheus/config/v1/rules",
 			method:    http.MethodPost,
 			url:       "http://mimirurl.com/apathto",
-			resultURL: "http://mimirurl.com/apathto/api/v1/rules",
+			resultURL: "http://mimirurl.com/apathto/prometheus/config/v1/rules",
 		},
 		{
 			name:      "builds the correct URL when the base url has a path with trailing slash",
-			path:      "/api/v1/rules",
+			path:      "/prometheus/config/v1/rules",
 			method:    http.MethodPost,
 			url:       "http://mimirurl.com/apathto/",
-			resultURL: "http://mimirurl.com/apathto/api/v1/rules",
+			resultURL: "http://mimirurl.com/apathto/prometheus/config/v1/rules",
 		},
 		{
 			name:      "builds the correct URL with a trailing slash and the target path contains special characters",
-			path:      "/api/v1/rules/%20%2Fspace%F0%9F%8D%BB",
+			path:      "/prometheus/config/v1/rules/%20%2Fspace%F0%9F%8D%BB",
 			method:    http.MethodPost,
 			url:       "http://mimirurl.com/",
-			resultURL: "http://mimirurl.com/api/v1/rules/%20%2Fspace%F0%9F%8D%BB",
+			resultURL: "http://mimirurl.com/prometheus/config/v1/rules/%20%2Fspace%F0%9F%8D%BB",
 		},
 		{
 			name:      "builds the correct URL without a trailing slash and the target path contains special characters",
-			path:      "/api/v1/rules/%20%2Fspace%F0%9F%8D%BB",
+			path:      "/prometheus/config/v1/rules/%20%2Fspace%F0%9F%8D%BB",
 			method:    http.MethodPost,
 			url:       "http://mimirurl.com",
-			resultURL: "http://mimirurl.com/api/v1/rules/%20%2Fspace%F0%9F%8D%BB",
+			resultURL: "http://mimirurl.com/prometheus/config/v1/rules/%20%2Fspace%F0%9F%8D%BB",
 		},
 		{
 			name:      "builds the correct URL when the base url has a path and the target path contains special characters",
-			path:      "/api/v1/rules/%20%2Fspace%F0%9F%8D%BB",
+			path:      "/prometheus/config/v1/rules/%20%2Fspace%F0%9F%8D%BB",
 			method:    http.MethodPost,
 			url:       "http://mimirurl.com/apathto",
-			resultURL: "http://mimirurl.com/apathto/api/v1/rules/%20%2Fspace%F0%9F%8D%BB",
+			resultURL: "http://mimirurl.com/apathto/prometheus/config/v1/rules/%20%2Fspace%F0%9F%8D%BB",
 		},
 		{
 			name:      "builds the correct URL when the base url has a path and the target path starts with a escaped slash",
-			path:      "/api/v1/rules/%2F-first-char-slash",
+			path:      "/prometheus/config/v1/rules/%2F-first-char-slash",
 			method:    http.MethodPost,
 			url:       "http://mimirurl.com/apathto",
-			resultURL: "http://mimirurl.com/apathto/api/v1/rules/%2F-first-char-slash",
+			resultURL: "http://mimirurl.com/apathto/prometheus/config/v1/rules/%2F-first-char-slash",
 		},
 		{
 			name:      "builds the correct URL when the base url has a path and the target path ends with a escaped slash",
-			path:      "/api/v1/rules/last-char-slash%2F",
+			path:      "/prometheus/config/v1/rules/last-char-slash%2F",
 			method:    http.MethodPost,
 			url:       "http://mimirurl.com/apathto",
-			resultURL: "http://mimirurl.com/apathto/api/v1/rules/last-char-slash%2F",
+			resultURL: "http://mimirurl.com/apathto/prometheus/config/v1/rules/last-char-slash%2F",
 		},
 	}
 
@@ -91,7 +92,7 @@ func TestBuildURL(t *testing.T) {
 			url, err := url.Parse(tt.url)
 			require.NoError(t, err)
 
-			req, err := buildRequest(tt.path, tt.method, *url, []byte{})
+			req, err := buildRequest(tt.path, tt.method, *url, bytes.NewBuffer(nil), 0)
 			require.NoError(t, err)
 			require.Equal(t, tt.resultURL, req.URL.String())
 		})

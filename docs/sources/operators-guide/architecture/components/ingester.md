@@ -29,7 +29,7 @@ Each ingester could be in one of the following states:
 - `UNHEALTHY`<br />
   The ingester has failed to heartbeat to the hash ring. While in this state, distributors bypass the ingester, which means that the ingester does not receive write or read requests.
 
-To configure the ingesters' hash ring, refer to [configuring hash rings]({{< relref "../../configuring/configuring-hash-rings.md" >}}).
+To configure the ingesters' hash ring, refer to [configuring hash rings]({{< relref "../../configure/configuring-hash-rings.md" >}}).
 
 ## Ingesters write de-amplification
 
@@ -42,10 +42,11 @@ Write de-amplification is the main source of Mimir's low total cost of ownership
 ## Ingesters failure and data loss
 
 If an ingester process crashes or exits abruptly, all the in-memory series that have not yet been uploaded to the long-term storage could be lost.
-There are two primary ways to mitigate this failure mode:
+There are the following ways to mitigate this failure mode:
 
-1. Replication
-2. Write-ahead log (WAL)
+- Replication
+- Write-ahead log (WAL)
+- Write-behind log (WBL), only used if out-of-order ingestion is enabled.
 
 ### Replication
 
@@ -63,16 +64,31 @@ If an ingester fails, a subsequent process restart replays the WAL and recovers 
 Contrary to the sole replication, and given that the persistent disk data is not lost, in the event of the failure of multiple ingesters, each ingester recovers the in-memory series samples from WAL after a subsequent restart.
 Replication is still recommended in order to gracefully handle a single ingester failure.
 
+### Write-behind log
+
+The write-behind log (WBL) is similar to the WAL, but it only writes incoming out-of-order samples to a persistent disk until the series are uploaded to long-term storage.
+
+There is a different log for this because it is not possible to know if a sample is out-of-order until Mimir tries to append it.
+First Mimir needs to attempt to append it, the TSDB will detect that it is out-of-order, append it anyway if out-of-order is enabled and then write it to the log.
+
+If the ingesters fail, the same characteristics as in the WAL apply.
+
 ## Zone aware replication
 
 Zone aware replication ensures that the ingester replicas for a given time series are divided across different zones.
 Zones can represent logical or physical failure domains, for example, different data centers.
 Dividing replicas across multiple zones prevents data loss and service interruptions when there is a zone-wide outage.
 
-To set up multi-zone replication, refer to [Configuring zone-aware replication]({{< relref "../../configuring/configuring-zone-aware-replication.md" >}}).
+To set up multi-zone replication, refer to [Configuring zone-aware replication]({{< relref "../../configure/configuring-zone-aware-replication.md" >}}).
 
 ## Shuffle sharding
 
 Shuffle sharding can be used to reduce the effect that multiple tenants can have on each other.
 
-For more information on shuffle sharding, refer to [Configuring shuffle sharding]({{< relref "../../configuring/configuring-shuffle-sharding/index.md" >}}).
+For more information on shuffle sharding, refer to [Configuring shuffle sharding]({{< relref "../../configure/configuring-shuffle-sharding/index.md" >}}).
+
+## Out-of-order samples ingestion
+
+Out-of-order samples are discarded by default. If the system writing samples to Mimir produces out-of-order samples, you can enable ingestion of such samples.
+
+For more information about out-of-order samples ingestion, refer to [Configuring out of order samples ingestion]({{< relref "../../configure/configure-out-of-order-samples-ingestion.md" >}}).

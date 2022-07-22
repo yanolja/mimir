@@ -4,7 +4,6 @@ distributor:
   pool:
     health_check_ingesters: true
   ring:
-    instance_addr: 127.0.0.1
     kvstore:
       store: consul
       consul:
@@ -20,7 +19,6 @@ ingester_client:
 ingester:
   ring:
     # We want to start immediately.
-    join_after: 0
     final_sleep: 0s
     num_tokens: 512
     kvstore:
@@ -32,8 +30,7 @@ ingester:
 # These memberlist options will be only used if memberlist is activated via CLI option.
 memberlist:
   join_members:
-    - distributor:10001
-  abort_if_cluster_join_fails: false
+    - distributor-1:10000
   rejoin_interval: 10s
 
 blocks_storage:

@@ -4,6 +4,7 @@
 package downsample
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
 	"github.com/oklog/ulid"
 	"github.com/pkg/errors"
 	"github.com/prometheus/prometheus/model/labels"
@@ -128,7 +130,7 @@ func Downsample(
 		// While #183 exists, we sanitize the chunks we retrieved from the block
 		// before retrieving their samples.
 		for i, c := range chks {
-			chk, err := chunkr.Chunk(c.Ref)
+			chk, err := chunkr.Chunk(c)
 			if err != nil {
 				return id, errors.Wrapf(err, "get chunk %d, series %d", c.Ref, postings.At())
 			}
@@ -153,7 +155,13 @@ func Downsample(
 			for _, c := range chks {
 				ac, ok := c.Chunk.(*AggrChunk)
 				if !ok {
-					return id, errors.Errorf("expected downsampled chunk (*downsample.AggrChunk) got %T instead for series: %d", c.Chunk, postings.At())
+					if c.Chunk.NumSamples() == 0 {
+						// Downsampled block can erroneously contain empty XOR chunks, skip those
+						// https://github.com/thanos-io/thanos/issues/5272
+						level.Warn(logger).Log("msg", fmt.Sprintf("expected downsampled chunk (*downsample.AggrChunk) got an empty %T instead for series: %d", c.Chunk, postings.At()))
+						continue
+					}
+					return id, errors.Errorf("expected downsampled chunk (*downsample.AggrChunk) got a non-empty %T instead for series: %d", c.Chunk, postings.At())
 				}
 				aggrChunks = append(aggrChunks, ac)
 			}

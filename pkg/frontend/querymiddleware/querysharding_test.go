@@ -40,6 +40,7 @@ import (
 	"github.com/grafana/mimir/pkg/mimirpb"
 	"github.com/grafana/mimir/pkg/storage/sharding"
 	"github.com/grafana/mimir/pkg/util"
+	"github.com/grafana/mimir/pkg/util/validation"
 )
 
 var (
@@ -124,6 +125,14 @@ func TestQueryShardingCorrectness(t *testing.T) {
 	}{
 		"sum() no grouping": {
 			query:                  `sum(metric_counter)`,
+			expectedShardedQueries: 1,
+		},
+		"sum() offset": {
+			query:                  `sum(metric_counter offset 5s)`,
+			expectedShardedQueries: 1,
+		},
+		"sum() negative offset": {
+			query:                  `sum(metric_counter offset -5s)`,
 			expectedShardedQueries: 1,
 		},
 		"sum() grouping 'by'": {
@@ -323,6 +332,10 @@ func TestQueryShardingCorrectness(t *testing.T) {
 			query:                  `sum by (group_1)(rate(metric_counter[1h] @ end() offset 1m))`,
 			expectedShardedQueries: 1,
 		},
+		"@ modifier and negative offset": {
+			query:                  `sum by (group_1)(rate(metric_counter[1h] @ start() offset -1m))`,
+			expectedShardedQueries: 1,
+		},
 		"label_replace": {
 			query: `sum by (foo)(
 					 	label_replace(
@@ -445,6 +458,38 @@ func TestQueryShardingCorrectness(t *testing.T) {
 			query:                  `"test"`,
 			expectedShardedQueries: 0,
 			noRangeQuery:           true,
+		},
+		"day_of_month() >= 1 and day_of_month()": {
+			query:                  `day_of_month() >= 1 and day_of_month()`,
+			expectedShardedQueries: 0,
+		},
+		"month() >= 1 and month()": {
+			query:                  `month() >= 1 and month()`,
+			expectedShardedQueries: 0,
+		},
+		"vector(1) > 0 and vector(1)": {
+			query:                  `vector(1) > 0 and vector(1)`,
+			expectedShardedQueries: 0,
+		},
+		"sum(metric_counter) > 0 and vector(1)": {
+			query:                  `sum(metric_counter) > 0 and vector(1)`,
+			expectedShardedQueries: 1,
+		},
+		"vector(1)": {
+			query:                  `vector(1)`,
+			expectedShardedQueries: 0,
+		},
+		"time()": {
+			query:                  `time()`,
+			expectedShardedQueries: 0,
+		},
+		"month(sum(metric_counter))": {
+			query:                  `month(sum(metric_counter))`,
+			expectedShardedQueries: 1, // Sharded because the contents of `sum()` is sharded.
+		},
+		"month(sum(metric_counter)) > 0 and vector(1)": {
+			query:                  `month(sum(metric_counter)) > 0 and vector(1)`,
+			expectedShardedQueries: 1, // Sharded because the contents of `sum()` is sharded.
 		},
 	}
 
@@ -737,6 +782,7 @@ func TestQuerySharding_FunctionCorrectness(t *testing.T) {
 		{fn: "days_in_month"},
 		{fn: "day_of_month"},
 		{fn: "day_of_week"},
+		{fn: "day_of_year"},
 		{fn: "delta", rangeQuery: true},
 		{fn: "deriv", rangeQuery: true},
 		{fn: "exp"},
@@ -1115,25 +1161,27 @@ func TestQuerySharding_ShouldReturnErrorInCorrectFormat(t *testing.T) {
 	var (
 		engine        = newEngine()
 		engineTimeout = promql.NewEngine(promql.EngineOpts{
-			Logger:             log.NewNopLogger(),
-			Reg:                nil,
-			MaxSamples:         10e6,
-			Timeout:            50 * time.Millisecond,
-			ActiveQueryTracker: nil,
-			LookbackDelta:      lookbackDelta,
-			EnableAtModifier:   true,
+			Logger:               log.NewNopLogger(),
+			Reg:                  nil,
+			MaxSamples:           10e6,
+			Timeout:              50 * time.Millisecond,
+			ActiveQueryTracker:   nil,
+			LookbackDelta:        lookbackDelta,
+			EnableAtModifier:     true,
+			EnableNegativeOffset: true,
 			NoStepSubqueryIntervalFn: func(rangeMillis int64) int64 {
 				return int64(1 * time.Minute / (time.Millisecond / time.Nanosecond))
 			},
 		})
 		engineSampleLimit = promql.NewEngine(promql.EngineOpts{
-			Logger:             log.NewNopLogger(),
-			Reg:                nil,
-			MaxSamples:         1,
-			Timeout:            time.Hour,
-			ActiveQueryTracker: nil,
-			LookbackDelta:      lookbackDelta,
-			EnableAtModifier:   true,
+			Logger:               log.NewNopLogger(),
+			Reg:                  nil,
+			MaxSamples:           1,
+			Timeout:              time.Hour,
+			ActiveQueryTracker:   nil,
+			LookbackDelta:        lookbackDelta,
+			EnableAtModifier:     true,
+			EnableNegativeOffset: true,
 			NoStepSubqueryIntervalFn: func(rangeMillis int64) int64 {
 				return int64(1 * time.Minute / (time.Millisecond / time.Nanosecond))
 			},
@@ -1142,7 +1190,7 @@ func TestQuerySharding_ShouldReturnErrorInCorrectFormat(t *testing.T) {
 			return nil, httpgrpc.ErrorFromHTTPResponse(&httpgrpc.HTTPResponse{Code: http.StatusInternalServerError, Body: []byte("fatal queryable error")})
 		})
 		queryablePrometheusExecErr = storage.QueryableFunc(func(ctx context.Context, mint, maxt int64) (storage.Querier, error) {
-			return nil, apierror.New(apierror.TypeExec, "expanding series: the query time range exceeds the limit (query length: 744h6m0s, limit: 720h0m0s")
+			return nil, apierror.Newf(apierror.TypeExec, "expanding series: %s", validation.NewMaxQueryLengthError(744*time.Hour, 720*time.Hour))
 		})
 		queryable = storageSeriesQueryable([]*promql.StorageSeries{
 			newSeries(labels.Labels{{Name: "__name__", Value: "bar1"}}, start.Add(-lookbackDelta), end, step, factor(5)),
@@ -1194,7 +1242,7 @@ func TestQuerySharding_ShouldReturnErrorInCorrectFormat(t *testing.T) {
 			engineDownstream: engine,
 			engineSharding:   engineSampleLimit,
 			queryable:        queryablePrometheusExecErr,
-			expError:         apierror.New(apierror.TypeExec, "expanding series: the query time range exceeds the limit (query length: 744h6m0s, limit: 720h0m0s"),
+			expError:         apierror.Newf(apierror.TypeExec, "expanding series: %s", validation.NewMaxQueryLengthError(744*time.Hour, 720*time.Hour)),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1342,10 +1390,12 @@ func BenchmarkQuerySharding(b *testing.B) {
 			time.Millisecond / 10,
 		} {
 			engine := promql.NewEngine(promql.EngineOpts{
-				Logger:     log.NewNopLogger(),
-				Reg:        nil,
-				MaxSamples: 100000000,
-				Timeout:    time.Minute,
+				Logger:               log.NewNopLogger(),
+				Reg:                  nil,
+				MaxSamples:           100000000,
+				Timeout:              time.Minute,
+				EnableNegativeOffset: true,
+				EnableAtModifier:     true,
 			})
 
 			queryable := newMockShardedQueryable(
@@ -1816,13 +1866,14 @@ func (i *seriesIteratorMock) Warnings() storage.Warnings {
 // newEngine creates and return a new promql.Engine used for testing.
 func newEngine() *promql.Engine {
 	return promql.NewEngine(promql.EngineOpts{
-		Logger:             log.NewNopLogger(),
-		Reg:                nil,
-		MaxSamples:         10e6,
-		Timeout:            1 * time.Hour,
-		ActiveQueryTracker: nil,
-		LookbackDelta:      lookbackDelta,
-		EnableAtModifier:   true,
+		Logger:               log.NewNopLogger(),
+		Reg:                  nil,
+		MaxSamples:           10e6,
+		Timeout:              1 * time.Hour,
+		ActiveQueryTracker:   nil,
+		LookbackDelta:        lookbackDelta,
+		EnableAtModifier:     true,
+		EnableNegativeOffset: true,
 		NoStepSubqueryIntervalFn: func(rangeMillis int64) int64 {
 			return int64(1 * time.Minute / (time.Millisecond / time.Nanosecond))
 		},

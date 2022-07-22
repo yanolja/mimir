@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"math"
 	"strings"
 	"time"
@@ -16,25 +17,32 @@ import (
 	"github.com/grafana/dskit/flagext"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/relabel"
+	"github.com/thanos-io/thanos/pkg/block"
 	"golang.org/x/time/rate"
+	"gopkg.in/yaml.v3"
 
 	"github.com/grafana/mimir/pkg/ingester/activeseries"
 )
 
 const (
-	MaxSeriesPerMetricFlag    = "ingester.max-global-series-per-metric"
-	MaxMetadataPerMetricFlag  = "ingester.max-global-metadata-per-metric"
-	MaxSeriesPerUserFlag      = "ingester.max-global-series-per-user"
-	MaxMetadataPerUserFlag    = "ingester.max-global-metadata-per-user"
-	MaxChunksPerQueryFlag     = "querier.max-fetched-chunks-per-query"
-	MaxChunkBytesPerQueryFlag = "querier.max-fetched-chunk-bytes-per-query"
-	MaxSeriesPerQueryFlag     = "querier.max-fetched-series-per-query"
-
+	MaxSeriesPerMetricFlag     = "ingester.max-global-series-per-metric"
+	MaxMetadataPerMetricFlag   = "ingester.max-global-metadata-per-metric"
+	MaxSeriesPerUserFlag       = "ingester.max-global-series-per-user"
+	MaxMetadataPerUserFlag     = "ingester.max-global-metadata-per-user"
+	MaxChunksPerQueryFlag      = "querier.max-fetched-chunks-per-query"
+	MaxChunkBytesPerQueryFlag  = "querier.max-fetched-chunk-bytes-per-query"
+	MaxSeriesPerQueryFlag      = "querier.max-fetched-series-per-query"
 	maxLabelNamesPerSeriesFlag = "validation.max-label-names-per-series"
 	maxLabelNameLengthFlag     = "validation.max-length-label-name"
 	maxLabelValueLengthFlag    = "validation.max-length-label-value"
 	maxMetadataLengthFlag      = "validation.max-metadata-length"
 	creationGracePeriodFlag    = "validation.create-grace-period"
+	maxQueryLengthFlag         = "store.max-query-length"
+	requestRateFlag            = "distributor.request-rate-limit"
+	requestBurstSizeFlag       = "distributor.request-burst-size"
+	ingestionRateFlag          = "distributor.ingestion-rate-limit"
+	ingestionBurstSizeFlag     = "distributor.ingestion-burst-size"
+	HATrackerMaxClustersFlag   = "distributor.ha-tracker.max-clusters"
 )
 
 // LimitError are errors that do not comply with the limits specified.
@@ -59,6 +67,8 @@ type ForwardingRules map[string]ForwardingRule
 // limits via flags, or per-user limits via yaml config.
 type Limits struct {
 	// Distributor enforced limits.
+	RequestRate               float64             `yaml:"request_rate" json:"request_rate" category:"experimental"`
+	RequestBurstSize          int                 `yaml:"request_burst_size" json:"request_burst_size" category:"experimental"`
 	IngestionRate             float64             `yaml:"ingestion_rate" json:"ingestion_rate"`
 	IngestionBurstSize        int                 `yaml:"ingestion_burst_size" json:"ingestion_burst_size"`
 	AcceptHASamples           bool                `yaml:"accept_ha_samples" json:"accept_ha_samples"`
@@ -85,7 +95,11 @@ type Limits struct {
 	// Exemplars
 	MaxGlobalExemplarsPerUser int `yaml:"max_global_exemplars_per_user" json:"max_global_exemplars_per_user" category:"experimental"`
 	// Active series custom trackers
-	ActiveSeriesCustomTrackersConfig activeseries.CustomTrackersConfig `yaml:"active_series_custom_trackers_config" json:"active_series_custom_trackers_config" doc:"description=Additional custom trackers for active metrics. If there are active series matching a provided matcher (map value), the count will be exposed in the custom trackers metric labeled using the tracker name (map key). Zero valued counts are not exposed (and removed when they go back to zero)." category:"advanced"`
+	// TODO remove this with Mimir version 2.4
+	ActiveSeriesCustomTrackersConfigOld activeseries.CustomTrackersConfig `yaml:"active_series_custom_trackers_config" json:"active_series_custom_trackers_config" doc:"hidden"`
+	ActiveSeriesCustomTrackersConfig    activeseries.CustomTrackersConfig `yaml:"active_series_custom_trackers" json:"active_series_custom_trackers" doc:"description=Additional custom trackers for active metrics. If there are active series matching a provided matcher (map value), the count will be exposed in the custom trackers metric labeled using the tracker name (map key). Zero valued counts are not exposed (and removed when they go back to zero)." category:"advanced"`
+	// Max allowed time window for out-of-order samples.
+	OutOfOrderTimeWindow model.Duration `yaml:"out_of_order_time_window" json:"out_of_order_time_window" category:"experimental"`
 
 	// Querier enforced limits.
 	MaxChunksPerQuery              int            `yaml:"max_fetched_chunks_per_query" json:"max_fetched_chunks_per_query"`
@@ -114,10 +128,12 @@ type Limits struct {
 	StoreGatewayTenantShardSize int `yaml:"store_gateway_tenant_shard_size" json:"store_gateway_tenant_shard_size"`
 
 	// Compactor.
-	CompactorBlocksRetentionPeriod model.Duration `yaml:"compactor_blocks_retention_period" json:"compactor_blocks_retention_period"`
-	CompactorSplitAndMergeShards   int            `yaml:"compactor_split_and_merge_shards" json:"compactor_split_and_merge_shards"`
-	CompactorSplitGroups           int            `yaml:"compactor_split_groups" json:"compactor_split_groups"`
-	CompactorTenantShardSize       int            `yaml:"compactor_tenant_shard_size" json:"compactor_tenant_shard_size"`
+	CompactorBlocksRetentionPeriod     model.Duration `yaml:"compactor_blocks_retention_period" json:"compactor_blocks_retention_period"`
+	CompactorSplitAndMergeShards       int            `yaml:"compactor_split_and_merge_shards" json:"compactor_split_and_merge_shards"`
+	CompactorSplitGroups               int            `yaml:"compactor_split_groups" json:"compactor_split_groups"`
+	CompactorTenantShardSize           int            `yaml:"compactor_tenant_shard_size" json:"compactor_tenant_shard_size"`
+	CompactorPartialBlockDeletionDelay model.Duration `yaml:"compactor_partial_block_deletion_delay" json:"compactor_partial_block_deletion_delay"`
+	CompactorBlockUploadEnabled        bool           `yaml:"compactor_block_upload_enabled" json:"compactor_block_upload_enabled"`
 
 	// This config doesn't have a CLI flag registered here because they're registered in
 	// their own original config struct.
@@ -145,12 +161,14 @@ type Limits struct {
 // RegisterFlags adds the flags required to config this to the given FlagSet
 func (l *Limits) RegisterFlags(f *flag.FlagSet) {
 	f.IntVar(&l.IngestionTenantShardSize, "distributor.ingestion-tenant-shard-size", 0, "The tenant's shard size used by shuffle-sharding. Must be set both on ingesters and distributors. 0 disables shuffle sharding.")
-	f.Float64Var(&l.IngestionRate, "distributor.ingestion-rate-limit", 10000, "Per-tenant ingestion rate limit in samples per second.")
-	f.IntVar(&l.IngestionBurstSize, "distributor.ingestion-burst-size", 200000, "Per-tenant allowed ingestion burst size (in number of samples).")
+	f.Float64Var(&l.RequestRate, requestRateFlag, 0, "Per-tenant request rate limit in requests per second. 0 to disable.")
+	f.IntVar(&l.RequestBurstSize, requestBurstSizeFlag, 0, "Per-tenant allowed request burst size. 0 to disable.")
+	f.Float64Var(&l.IngestionRate, ingestionRateFlag, 10000, "Per-tenant ingestion rate limit in samples per second.")
+	f.IntVar(&l.IngestionBurstSize, ingestionBurstSizeFlag, 200000, "Per-tenant allowed ingestion burst size (in number of samples).")
 	f.BoolVar(&l.AcceptHASamples, "distributor.ha-tracker.enable-for-all-users", false, "Flag to enable, for all tenants, handling of samples with external labels identifying replicas in an HA Prometheus setup.")
 	f.StringVar(&l.HAClusterLabel, "distributor.ha-tracker.cluster", "cluster", "Prometheus label to look for in samples to identify a Prometheus HA cluster.")
 	f.StringVar(&l.HAReplicaLabel, "distributor.ha-tracker.replica", "__replica__", "Prometheus label to look for in samples to identify a Prometheus HA replica.")
-	f.IntVar(&l.HAMaxClusters, "distributor.ha-tracker.max-clusters", 0, "Maximum number of clusters that HA tracker will keep track of for a single tenant. 0 to disable the limit.")
+	f.IntVar(&l.HAMaxClusters, HATrackerMaxClustersFlag, 100, "Maximum number of clusters that HA tracker will keep track of for a single tenant. 0 to disable the limit.")
 	f.Var(&l.DropLabels, "distributor.drop-label", "This flag can be used to specify label names that to drop during sample ingestion within the distributor and can be repeated in order to drop multiple labels.")
 	f.IntVar(&l.MaxLabelNameLength, maxLabelNameLengthFlag, 1024, "Maximum length accepted for label names")
 	f.IntVar(&l.MaxLabelValueLength, maxLabelValueLengthFlag, 2048, "Maximum length accepted for label value. This setting also applies to the metric name")
@@ -167,11 +185,12 @@ func (l *Limits) RegisterFlags(f *flag.FlagSet) {
 	f.IntVar(&l.MaxGlobalMetadataPerMetric, MaxMetadataPerMetricFlag, 0, "The maximum number of metadata per metric, across the cluster. 0 to disable.")
 	f.IntVar(&l.MaxGlobalExemplarsPerUser, "ingester.max-global-exemplars-per-user", 0, "The maximum number of exemplars in memory, across the cluster. 0 to disable exemplars ingestion.")
 	f.Var(&l.ActiveSeriesCustomTrackersConfig, "ingester.active-series-custom-trackers", "Additional active series metrics, matching the provided matchers. Matchers should be in form <name>:<matcher>, like 'foobar:{foo=\"bar\"}'. Multiple matchers can be provided either providing the flag multiple times or providing multiple semicolon-separated values to a single flag.")
+	f.Var(&l.OutOfOrderTimeWindow, "ingester.out-of-order-time-window", "Non-zero value enables out-of-order support for most recent samples that are within the time window in relation to the following two conditions: (1) The newest sample for that time series, if it exists. For example, within [series.maxTime-timeWindow, series.maxTime]). (2) The TSDB's maximum time, if the series does not exist. For example, within [db.maxTime-timeWindow, db.maxTime]). The ingester will need more memory as a factor of rate of out-of-order samples being ingested and the number of series that are getting out-of-order samples.")
 
 	f.IntVar(&l.MaxChunksPerQuery, MaxChunksPerQueryFlag, 2e6, "Maximum number of chunks that can be fetched in a single query from ingesters and long-term storage. This limit is enforced in the querier, ruler and store-gateway. 0 to disable.")
 	f.IntVar(&l.MaxFetchedSeriesPerQuery, MaxSeriesPerQueryFlag, 0, "The maximum number of unique series for which a query can fetch samples from each ingesters and storage. This limit is enforced in the querier and ruler. 0 to disable")
 	f.IntVar(&l.MaxFetchedChunkBytesPerQuery, MaxChunkBytesPerQueryFlag, 0, "The maximum size of all chunks in bytes that a query can fetch from each ingester and storage. This limit is enforced in the querier and ruler. 0 to disable.")
-	f.Var(&l.MaxQueryLength, "store.max-query-length", "Limit the query time range (end - start time). This limit is enforced in the query-frontend (on the received query), in the querier (on the query possibly split by the query-frontend) and ruler. 0 to disable.")
+	f.Var(&l.MaxQueryLength, maxQueryLengthFlag, "Limit the query time range (end - start time). This limit is enforced in the query-frontend (on the received query), in the querier (on the query possibly split by the query-frontend) and ruler. 0 to disable.")
 	f.Var(&l.MaxQueryLookback, "querier.max-query-lookback", "Limit how long back data (series and metadata) can be queried, up until <lookback> duration ago. This limit is enforced in the query-frontend, querier and ruler. If the requested time range is outside the allowed range, the request will not fail but will be manipulated to only query data within the allowed time range. 0 to disable.")
 	f.IntVar(&l.MaxQueryParallelism, "querier.max-query-parallelism", 14, "Maximum number of split (by time) or partial (by shard) queries that will be scheduled in parallel by the query-frontend for a single input query. This limit is introduced to have a fairer query scheduling and avoid a single query over a large time range saturating all available queriers.")
 	f.Var(&l.MaxLabelsQueryLength, "store.max-labels-query-length", "Limit the time range (end - start time) of series, label names and values queries. This limit is enforced in the querier. If the requested time range is outside the allowed range, the request will not fail but will be manipulated to only query data within the allowed time range. 0 to disable.")
@@ -193,6 +212,8 @@ func (l *Limits) RegisterFlags(f *flag.FlagSet) {
 	f.IntVar(&l.CompactorSplitAndMergeShards, "compactor.split-and-merge-shards", 0, "The number of shards to use when splitting blocks. 0 to disable splitting.")
 	f.IntVar(&l.CompactorSplitGroups, "compactor.split-groups", 1, "Number of groups that blocks for splitting should be grouped into. Each group of blocks is then split separately. Number of output split shards is controlled by -compactor.split-and-merge-shards.")
 	f.IntVar(&l.CompactorTenantShardSize, "compactor.compactor-tenant-shard-size", 0, "Max number of compactors that can compact blocks for single tenant. 0 to disable the limit and use all compactors.")
+	f.Var(&l.CompactorPartialBlockDeletionDelay, "compactor.partial-block-deletion-delay", fmt.Sprintf("If a partial block (unfinished block without %s file) hasn't been modified for this time, it will be marked for deletion. 0 to disable.", block.MetaFilename))
+	f.BoolVar(&l.CompactorBlockUploadEnabled, "compactor.block-upload-enabled", false, "Enable block upload API for the tenant.")
 
 	// Store-gateway.
 	f.IntVar(&l.StoreGatewayTenantShardSize, "store-gateway.tenant-shard-size", 0, "The tenant's shard size, used when store-gateway sharding is enabled. Value of 0 disables shuffle sharding for the tenant, that is all tenant blocks are sharded across all store-gateway replicas.")
@@ -216,7 +237,7 @@ func (l *Limits) RegisterFlags(f *flag.FlagSet) {
 }
 
 // UnmarshalYAML implements the yaml.Unmarshaler interface.
-func (l *Limits) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (l *Limits) UnmarshalYAML(value *yaml.Node) error {
 	// We want to set l to the defaults and then overwrite it with the input.
 	// To make unmarshal fill the plain data struct rather than calling UnmarshalYAML
 	// again, we have to hide it using a type indirection.  See prometheus/config.
@@ -228,7 +249,17 @@ func (l *Limits) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		l.copyNotificationIntegrationLimits(defaultLimits.NotificationRateLimitPerIntegration)
 	}
 	type plain Limits
-	return unmarshal((*plain)(l))
+
+	err := value.DecodeWithOptions((*plain)(l), yaml.DecodeOptions{KnownFields: true})
+	if err != nil {
+		return err
+	}
+
+	if !l.ActiveSeriesCustomTrackersConfigOld.Empty() {
+		l.ActiveSeriesCustomTrackersConfig = l.ActiveSeriesCustomTrackersConfigOld
+		l.ActiveSeriesCustomTrackersConfigOld = activeseries.CustomTrackersConfig{}
+	}
+	return nil
 }
 
 // UnmarshalJSON implements the json.Unmarshaler interface.
@@ -246,7 +277,16 @@ func (l *Limits) UnmarshalJSON(data []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 
-	return dec.Decode((*plain)(l))
+	err := dec.Decode((*plain)(l))
+	if err != nil {
+		return err
+	}
+
+	if !l.ActiveSeriesCustomTrackersConfigOld.Empty() {
+		l.ActiveSeriesCustomTrackersConfig = l.ActiveSeriesCustomTrackersConfigOld
+		l.ActiveSeriesCustomTrackersConfigOld = activeseries.CustomTrackersConfig{}
+	}
+	return nil
 }
 
 func (l *Limits) copyNotificationIntegrationLimits(defaults NotificationRateLimitMap) {
@@ -291,6 +331,16 @@ func NewOverrides(defaults Limits, tenantLimits TenantLimits) (*Overrides, error
 		tenantLimits:  tenantLimits,
 		defaultLimits: &defaults,
 	}, nil
+}
+
+// RequestRate returns the limit on request rate (requests per second).
+func (o *Overrides) RequestRate(userID string) float64 {
+	return o.getOverridesForUser(userID).RequestRate
+}
+
+// RequestBurstSize returns the burst size for request rate.
+func (o *Overrides) RequestBurstSize(userID string) int {
+	return o.getOverridesForUser(userID).RequestBurstSize
 }
 
 // IngestionRate returns the limit on ingester rate (samples per second).
@@ -459,6 +509,11 @@ func (o *Overrides) ActiveSeriesCustomTrackersConfig(userID string) activeseries
 	return o.getOverridesForUser(userID).ActiveSeriesCustomTrackersConfig
 }
 
+// OutOfOrderTimeWindow returns the out-of-order time window for the user.
+func (o *Overrides) OutOfOrderTimeWindow(userID string) model.Duration {
+	return o.getOverridesForUser(userID).OutOfOrderTimeWindow
+}
+
 // IngestionTenantShardSize returns the ingesters shard size for a given user.
 func (o *Overrides) IngestionTenantShardSize(userID string) int {
 	return o.getOverridesForUser(userID).IngestionTenantShardSize
@@ -487,6 +542,16 @@ func (o *Overrides) CompactorSplitAndMergeShards(userID string) int {
 // CompactorSplitGroupsCount returns the number of groups that blocks for splitting should be grouped into.
 func (o *Overrides) CompactorSplitGroups(userID string) int {
 	return o.getOverridesForUser(userID).CompactorSplitGroups
+}
+
+// CompactorPartialBlockDeletionDelay returns the partial block deletion delay time period for a given user.
+func (o *Overrides) CompactorPartialBlockDeletionDelay(userID string) time.Duration {
+	return time.Duration(o.getOverridesForUser(userID).CompactorPartialBlockDeletionDelay)
+}
+
+// CompactorBlockUploadEnabled returns whether block upload is enabled for a certain tenant.
+func (o *Overrides) CompactorBlockUploadEnabled(tenantID string) bool {
+	return o.getOverridesForUser(tenantID).CompactorBlockUploadEnabled
 }
 
 // MetricRelabelConfigs returns the metric relabel configs for a given user.

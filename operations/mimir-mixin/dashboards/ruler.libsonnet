@@ -2,7 +2,12 @@ local utils = import 'mixin-utils/utils.libsonnet';
 local filename = 'mimir-ruler.json';
 
 (import 'dashboard-utils.libsonnet') {
-  local ruler_config_api_routes_re = '(prometheus|api_prom)_(rules.*|api_v1_(rules|alerts))',
+  local ruler_config_api_routes_re = '(%s)|(%s)' % [
+    // Prometheus API routes which are also exposed by Mimir.
+    '(api_prom_api_v1|prometheus_api_v1)_(rules|alerts|status_buildinfo)',
+    // Mimir-only API routes used for rule configuration.
+    '(api_prom|api_v1|prometheus|prometheus_config_v1)_rules.*',
+  ],
 
   rulerQueries+:: {
     ruleEvaluations: {
@@ -19,6 +24,7 @@ local filename = 'mimir-ruler.json';
             /
           sum (rate(cortex_prometheus_rule_evaluation_duration_seconds_count{%s}[$__rate_interval]))
         |||,
+      missedIterations: 'sum(rate(cortex_prometheus_rule_group_iterations_missed_total{%s}[$__rate_interval]))',
     },
     perUserPerGroupEvaluations: {
       failure: 'sum by(rule_group) (rate(cortex_prometheus_rule_evaluation_failures_total{%s}[$__rate_interval])) > 0',
@@ -77,23 +83,24 @@ local filename = 'mimir-ruler.json';
       )
       .addPanel(
         $.panel('Read from ingesters - QPS') +
-        $.statPanel('sum(rate(cortex_ingester_client_request_duration_seconds_count{%s, operation="/cortex.Ingester/QueryStream"}[5m]))' % $.jobMatcher($._config.job_names.ruler), format='reqps')
+        $.statPanel('sum(rate(cortex_ingester_client_request_duration_seconds_count{%s, operation="/cortex.Ingester/QueryStream"}[$__rate_interval]))' % $.jobMatcher($._config.job_names.ruler), format='reqps')
       )
       .addPanel(
         $.panel('Write to ingesters - QPS') +
-        $.statPanel('sum(rate(cortex_ingester_client_request_duration_seconds_count{%s, operation="/cortex.Ingester/Push"}[5m]))' % $.jobMatcher($._config.job_names.ruler), format='reqps')
+        $.statPanel('sum(rate(cortex_ingester_client_request_duration_seconds_count{%s, operation="/cortex.Ingester/Push"}[$__rate_interval]))' % $.jobMatcher($._config.job_names.ruler), format='reqps')
       )
     )
     .addRow(
       $.row('Rule evaluations global')
       .addPanel(
-        $.panel('EPS') +
+        $.panel('Evaluations per second') +
         $.queryPanel(
           [
             $.rulerQueries.ruleEvaluations.success % [$.jobMatcher($._config.job_names.ruler), $.jobMatcher($._config.job_names.ruler)],
             $.rulerQueries.ruleEvaluations.failure % $.jobMatcher($._config.job_names.ruler),
+            $.rulerQueries.ruleEvaluations.missedIterations % $.jobMatcher($._config.job_names.ruler),
           ],
-          ['success', 'failed'],
+          ['success', 'failed', 'missed'],
         ),
       )
       .addPanel(
@@ -101,7 +108,8 @@ local filename = 'mimir-ruler.json';
         $.queryPanel(
           $.rulerQueries.ruleEvaluations.latency % [$.jobMatcher($._config.job_names.ruler), $.jobMatcher($._config.job_names.ruler)],
           'average'
-        ),
+        ) +
+        { yaxes: $.yaxes('s') },
       )
     )
     .addRowIf(
@@ -163,7 +171,7 @@ local filename = 'mimir-ruler.json';
       )
       .addPanel(
         $.panel('Consistency checks failed') +
-        $.queryPanel('sum(rate(cortex_querier_blocks_consistency_checks_failed_total{%s}[1m])) / sum(rate(cortex_querier_blocks_consistency_checks_total{%s}[1m]))' % [$.jobMatcher($._config.job_names.ruler), $.jobMatcher($._config.job_names.ruler)], 'Failure Rate') +
+        $.queryPanel('sum(rate(cortex_querier_blocks_consistency_checks_failed_total{%s}[$__rate_interval])) / sum(rate(cortex_querier_blocks_consistency_checks_total{%s}[$__rate_interval]))' % [$.jobMatcher($._config.job_names.ruler), $.jobMatcher($._config.job_names.ruler)], 'Failure Rate') +
         { yaxes: $.yaxes({ format: 'percentunit', max: 1 }) },
       )
     )
@@ -193,7 +201,8 @@ local filename = 'mimir-ruler.json';
         $.queryPanel(
           $.rulerQueries.groupEvaluations.latency % [$.jobMatcher($._config.job_names.ruler), $.jobMatcher($._config.job_names.ruler)],
           '{{ user }}'
-        ),
+        ) +
+        { yaxes: $.yaxes('s') },
       )
       .addPanel(
         $.panel('Failures') +
@@ -209,7 +218,8 @@ local filename = 'mimir-ruler.json';
         $.queryPanel(
           $.rulerQueries.perUserPerGroupEvaluations.latency % [$.jobMatcher($._config.job_names.ruler), $.jobMatcher($._config.job_names.ruler)],
           '{{ user }}'
-        )
+        ) +
+        { yaxes: $.yaxes('s') }
       )
     )
     .addRows(

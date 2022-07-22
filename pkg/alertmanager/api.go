@@ -22,7 +22,7 @@ import (
 	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/template"
 	commoncfg "github.com/prometheus/common/config"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 
 	"github.com/grafana/dskit/tenant"
 
@@ -421,9 +421,6 @@ func validateReceiverHTTPConfig(cfg commoncfg.HTTPClientConfig) error {
 	}
 	if cfg.BearerTokenFile != "" {
 		return errPasswordFileNotAllowed
-	}
-	if cfg.ProxyURL.URL != nil {
-		return errProxyURLNotAllowed
 	}
 	if cfg.OAuth2 != nil && cfg.OAuth2.ClientSecretFile != "" {
 		return errOAuth2SecretFileNotAllowed

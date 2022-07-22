@@ -92,6 +92,7 @@ type Middleware func(ctx context.Context, req *httpgrpc.HTTPRequest) error
 // RemoteQuerier executes read operations against a httpgrpc.HTTPClient.
 type RemoteQuerier struct {
 	client         httpgrpc.HTTPClient
+	timeout        time.Duration
 	middlewares    []Middleware
 	promHTTPPrefix string
 	logger         log.Logger
@@ -100,12 +101,14 @@ type RemoteQuerier struct {
 // NewRemoteQuerier creates and initializes a new RemoteQuerier instance.
 func NewRemoteQuerier(
 	client httpgrpc.HTTPClient,
+	timeout time.Duration,
 	prometheusHTTPPrefix string,
 	logger log.Logger,
 	middlewares ...Middleware,
 ) *RemoteQuerier {
 	return &RemoteQuerier{
 		client:         client,
+		timeout:        timeout,
 		middlewares:    middlewares,
 		promHTTPPrefix: prometheusHTTPPrefix,
 		logger:         logger,
@@ -147,13 +150,16 @@ func (q *RemoteQuerier) Read(ctx context.Context, query *prompb.Query) (*prompb.
 		}
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, q.timeout)
+	defer cancel()
+
 	resp, err := q.client.Handle(ctx, &req)
 	if err != nil {
 		level.Warn(log).Log("msg", "failed to perform remote read", "err", err, "qs", query)
 		return nil, err
 	}
 	if resp.Code/100 != 2 {
-		return nil, fmt.Errorf("unexpected response status code %d: %s", resp.Code, string(resp.Body))
+		return nil, httpgrpc.Errorf(int(resp.Code), "unexpected response status code %d: %s", resp.Code, string(resp.Body))
 	}
 	level.Debug(log).Log("msg", "remote read successfully performed", "qs", query)
 
@@ -211,13 +217,16 @@ func (q *RemoteQuerier) query(ctx context.Context, query string, ts time.Time, l
 		}
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, q.timeout)
+	defer cancel()
+
 	resp, err := q.client.Handle(ctx, &req)
 	if err != nil {
 		level.Warn(logger).Log("msg", "failed to remotely evaluate query expression", "err", err, "qs", query, "tm", ts)
 		return model.ValNone, nil, err
 	}
 	if resp.Code/100 != 2 {
-		return model.ValNone, nil, fmt.Errorf("unexpected response status code %d: %s", resp.Code, string(resp.Body))
+		return model.ValNone, nil, httpgrpc.Errorf(int(resp.Code), "unexpected response status code %d: %s", resp.Code, string(resp.Body))
 	}
 	level.Debug(logger).Log("msg", "query expression successfully evaluated", "qs", query, "tm", ts)
 

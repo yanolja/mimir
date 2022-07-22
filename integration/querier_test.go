@@ -72,7 +72,7 @@ func TestQuerierWithBlocksStorageRunningInMicroservicesMode(t *testing.T) {
 
 	// Configure the blocks storage to frequently compact TSDB head
 	// and ship blocks to the storage.
-	commonFlags := mergeFlags(BlocksStorageFlags(), map[string]string{
+	commonFlags := mergeFlags(BlocksStorageFlags(), BlocksStorageS3Flags(), map[string]string{
 		"-blocks-storage.tsdb.block-ranges-period": blockRangePeriod.String(),
 		"-blocks-storage.tsdb.ship-interval":       "1s",
 		"-blocks-storage.tsdb.retention-period":    ((blockRangePeriod * 2) - 1).String(),
@@ -310,8 +310,9 @@ func TestQuerierWithBlocksStorageRunningInMicroservicesMode(t *testing.T) {
 
 func TestQuerierWithBlocksStorageRunningInSingleBinaryMode(t *testing.T) {
 	tests := map[string]struct {
-		indexCacheBackend  string
-		bucketIndexEnabled bool
+		indexCacheBackend    string
+		bucketIndexEnabled   bool
+		queryShardingEnabled bool
 	}{
 		"inmemory index cache": {
 			indexCacheBackend: tsdb.IndexCacheBackendInMemory,
@@ -322,6 +323,10 @@ func TestQuerierWithBlocksStorageRunningInSingleBinaryMode(t *testing.T) {
 		"memcached index cache, bucket index enabled": {
 			indexCacheBackend:  tsdb.IndexCacheBackendMemcached,
 			bucketIndexEnabled: true,
+		},
+		"inmemory index cache, query sharding enabled": {
+			indexCacheBackend:    tsdb.IndexCacheBackendInMemory,
+			queryShardingEnabled: true,
 		},
 	}
 
@@ -346,7 +351,7 @@ func TestQuerierWithBlocksStorageRunningInSingleBinaryMode(t *testing.T) {
 
 			// Configure the blocks storage to frequently compact TSDB head
 			// and ship blocks to the storage.
-			flags := mergeFlags(BlocksStorageFlags(), map[string]string{
+			flags := mergeFlags(BlocksStorageFlags(), BlocksStorageS3Flags(), map[string]string{
 				"-blocks-storage.tsdb.block-ranges-period":                     blockRangePeriod.String(),
 				"-blocks-storage.tsdb.ship-interval":                           "1s",
 				"-blocks-storage.bucket-store.sync-interval":                   "1s",
@@ -372,6 +377,8 @@ func TestQuerierWithBlocksStorageRunningInSingleBinaryMode(t *testing.T) {
 				"-compactor.cleanup-interval":                     "2s", // Update bucket index often.
 				// Querier.
 				"-querier.query-store-after": "0",
+				// Query-frontend.
+				"-query-frontend.parallelize-shardable-queries": strconv.FormatBool(testCfg.queryShardingEnabled),
 			})
 
 			// Start Mimir replicas.
@@ -721,7 +728,7 @@ func TestQuerierWithBlocksStorageOnMissingBlocksFromStorage(t *testing.T) {
 
 	// Configure the blocks storage to frequently compact TSDB head
 	// and ship blocks to the storage.
-	flags := mergeFlags(BlocksStorageFlags(), map[string]string{
+	flags := mergeFlags(BlocksStorageFlags(), BlocksStorageS3Flags(), map[string]string{
 		"-blocks-storage.tsdb.block-ranges-period": blockRangePeriod.String(),
 		"-blocks-storage.tsdb.ship-interval":       "1s",
 		"-blocks-storage.tsdb.retention-period":    ((blockRangePeriod * 2) - 1).String(),
@@ -819,7 +826,7 @@ func TestQueryLimitsWithBlocksStorageRunningInMicroServices(t *testing.T) {
 
 	// Configure the blocks storage to frequently compact TSDB head
 	// and ship blocks to the storage.
-	flags := mergeFlags(BlocksStorageFlags(), map[string]string{
+	flags := mergeFlags(BlocksStorageFlags(), BlocksStorageS3Flags(), map[string]string{
 		"-blocks-storage.tsdb.block-ranges-period":   blockRangePeriod.String(),
 		"-blocks-storage.tsdb.ship-interval":         "1s",
 		"-blocks-storage.bucket-store.sync-interval": "1s",
@@ -887,7 +894,10 @@ func TestHashCollisionHandling(t *testing.T) {
 	require.NoError(t, err)
 	defer s.Close()
 
-	flags := BlocksStorageFlags()
+	flags := mergeFlags(
+		BlocksStorageFlags(),
+		BlocksStorageS3Flags(),
+	)
 
 	// Start dependencies.
 	minio := e2edb.NewMinio(9000, blocksBucketName)

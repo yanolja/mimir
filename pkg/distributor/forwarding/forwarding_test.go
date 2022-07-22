@@ -16,6 +16,7 @@ import (
 	"github.com/golang/snappy"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/weaveworks/common/httpgrpc"
 
@@ -24,8 +25,9 @@ import (
 )
 
 var testConfig = Config{
-	Enabled:        true,
-	RequestTimeout: time.Second,
+	Enabled:         true,
+	RequestTimeout:  time.Second,
+	PropagateErrors: true,
 }
 
 func TestForwardingSamplesSuccessfully(t *testing.T) {
@@ -87,10 +89,10 @@ func TestForwardingSamplesSuccessfully(t *testing.T) {
 	expectedMetrics := `
 	# HELP cortex_distributor_forward_requests_total The total number of requests the Distributor made to forward samples.
 	# TYPE cortex_distributor_forward_requests_total counter
-	cortex_distributor_forward_requests_total{user="tenant"} 2
+	cortex_distributor_forward_requests_total{} 2
 	# HELP cortex_distributor_forward_samples_total The total number of samples the Distributor forwarded.
 	# TYPE cortex_distributor_forward_samples_total counter
-	cortex_distributor_forward_samples_total{user="tenant"} 4
+	cortex_distributor_forward_samples_total{} 4
 `
 
 	require.NoError(t, testutil.GatherAndCompare(
@@ -101,7 +103,7 @@ func TestForwardingSamplesSuccessfully(t *testing.T) {
 	))
 }
 
-func TestForwardingSamplesWithDifferentErrors(t *testing.T) {
+func TestForwardingSamplesWithDifferentErrorsWithPropagation(t *testing.T) {
 	type errorType uint16
 	const (
 		errNone           errorType = 0
@@ -111,6 +113,7 @@ func TestForwardingSamplesWithDifferentErrors(t *testing.T) {
 
 	type testcase struct {
 		name              string
+		config            Config
 		remoteStatusCodes []int
 		expectedError     errorType
 	}
@@ -118,44 +121,67 @@ func TestForwardingSamplesWithDifferentErrors(t *testing.T) {
 	tcs := []testcase{
 		{
 			name:              "non-recoverable and successful codes should result in non-recoverable",
+			config:            testConfig,
 			remoteStatusCodes: []int{200, 400, 200},
 			expectedError:     errNonRecoverable,
 		}, {
 			name:              "recoverable, non-recoverable and successful codes should result in recoverable (1)",
+			config:            testConfig,
 			remoteStatusCodes: []int{200, 400, 500},
 			expectedError:     errRecoverable,
 		}, {
 			name:              "recoverable, non-recoverable and successful codes should result in recoverable (2)",
+			config:            testConfig,
 			remoteStatusCodes: []int{500, 400, 200},
 			expectedError:     errRecoverable,
 		}, {
 			name:              "successful codes should result in no error",
+			config:            testConfig,
 			remoteStatusCodes: []int{200, 200},
 			expectedError:     errNone,
 		}, {
 			name:              "codes which are not divisible by 100 (1)",
+			config:            testConfig,
 			remoteStatusCodes: []int{204, 401, 200},
 			expectedError:     errNonRecoverable,
 		}, {
 			name:              "codes which are not divisible by 100 (2)",
+			config:            testConfig,
 			remoteStatusCodes: []int{202, 403, 502},
 			expectedError:     errRecoverable,
 		}, {
 			name:              "codes which are not divisible by 100 (3)",
+			config:            testConfig,
 			remoteStatusCodes: []int{504, 404, 201},
 			expectedError:     errRecoverable,
+		}, {
+			name: "errors dont get propagated",
+			config: Config{
+				Enabled:         testConfig.Enabled,
+				RequestTimeout:  testConfig.RequestTimeout,
+				PropagateErrors: false,
+			},
+			remoteStatusCodes: []int{504, 404, 201},
+			expectedError:     errNone,
 		},
 	}
 
 	const tenant = "tenant"
-	forwarder := NewForwarder(nil, testConfig)
 	for _, tc := range tcs {
 		t.Run(tc.name, func(t *testing.T) {
+			reg := prometheus.NewRegistry()
+			forwarder := NewForwarder(reg, tc.config)
 			urls := make([]string, len(tc.remoteStatusCodes))
 			closers := make([]func(), len(tc.remoteStatusCodes))
+			expectedErrorsByStatusCode := make(map[int]int)
 			for i, code := range tc.remoteStatusCodes {
 				urls[i], _, _, closers[i] = newTestServer(t, code, false)
 				defer closers[i]()
+
+				if code/100 == 2 {
+					continue
+				}
+				expectedErrorsByStatusCode[code]++
 			}
 
 			rules := make(validation.ForwardingRules)
@@ -184,6 +210,22 @@ func TestForwardingSamplesWithDifferentErrors(t *testing.T) {
 				require.True(t, ok)
 				require.Equal(t, tc.expectedError, errorType(resp.Code))
 			}
+
+			var expectedMetrics strings.Builder
+			if len(expectedErrorsByStatusCode) > 0 {
+				expectedMetrics.WriteString(`
+				# TYPE cortex_distributor_forward_errors_total counter
+				# HELP cortex_distributor_forward_errors_total The total number of errors that the distributor received from forwarding targets when trying to send samples to them.`)
+			}
+			for statusCode, count := range expectedErrorsByStatusCode {
+				expectedMetrics.WriteString(fmt.Sprintf(`
+					cortex_distributor_forward_errors_total{status_code="%d"} %d
+	`, statusCode, count))
+			}
+
+			assert.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(expectedMetrics.String()),
+				"cortex_distributor_forward_errors_total",
+			))
 		})
 	}
 }

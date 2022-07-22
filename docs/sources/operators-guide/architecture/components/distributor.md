@@ -29,32 +29,40 @@ The distributor validation includes the following checks:
 - Each exemplar has a timestamp and at least one non-empty label name and value pair.
 - Each exemplar has no more than 128 labels.
 
-> **Note:** For each tenant, you can override the validation checks by modifying the overrides section of the [runtime configuration]({{< relref "../../configuring/about-runtime-configuration.md" >}}).
+> **Note:** For each tenant, you can override the validation checks by modifying the overrides section of the [runtime configuration]({{< relref "../../configure/about-runtime-configuration.md" >}}).
 
 ## Rate limiting
 
-The distributor includes a built-in rate limiter that it applies to each tenant.
-The rate limit is the maximum ingestion rate for each tenant across the Grafana Mimir cluster.
-If the rate exceeds the maximum number of samples per second, the distributor drops the request and returns an HTTP 429 response code.
+The distributor includes two different types of rate limiters that apply to each tenant.
 
-Internally, the limit is implemented using a per-distributor local rate limiter.
-The local rate limiter for each distributor is configured with a limit of `ingestion rate limit / N`, where `N` is the number of healthy distributor replicas.
-The distributor automatically adjusts the ingestion rate limit if the number of distributor replicas change.
-Because the rate limit is implemented using a per-distributor local rate limiter, the ingestion rate limit requires that write requests are [evenly distributed across the pool of distributors]({{< relref "#load-balancing-across-distributors" >}}).
+- **Request rate**<br />
+  The maximum number of requests per second that can be served across Grafana Mimir cluster for each tenant.
 
-Use the following flags to configure the rate limit:
+- **Ingestion rate**<br />
+  The maximum samples per second that can be ingested across Grafana Mimir cluster for each tenant.
 
+If any of these rates is exceeded, the distributor drops the request and returns an HTTP 429 response code.
+
+Internally, these limits are implemented using a per-distributor local rate limiter.
+The local rate limiter for each distributor is configured with a limit of `limit / N`, where `N` is the number of healthy distributor replicas.
+The distributor automatically adjusts the request and ingestion rate limits if the number of distributor replicas change.
+Because these rate limits are implemented using a per-distributor local rate limiter, they require that write requests are [evenly distributed across the pool of distributors]({{< relref "#load-balancing-across-distributors" >}}).
+
+Use the following flags to configure the rate limits:
+
+- `-distributor.request-rate-limit`: Request rate limit, which is per tenant, and which is in requests per second
+- `-distributor.request-burst-size`: Request burst size (in number of requests) allowed, which is per tenant
 - `-distributor.ingestion-rate-limit`: Ingestion rate limit, which is per tenant, and which is in samples per second
 - `-distributor.ingestion-burst-size`: Ingestion burst size (in number of samples) allowed, which is per tenant
 
-> **Note:** You can override rate limiting on a per-tenant basis by setting `ingestion_rate` and `ingestion_burst_size` in the overrides section of the runtime configuration.
+> **Note:** You can override rate limiting on a per-tenant basis by setting `request_rate`, `ingestion_rate`, `request_burst_size` and `ingestion_burst_size` in the overrides section of the runtime configuration.
 
 > **Note:** By default, Prometheus remote write doesn't retry requests on 429 HTTP response status code. To modify this behavior, use `retry_on_http_429: true` in the Prometheus [`remote_write` configuration](https://prometheus.io/docs/prometheus/latest/configuration/configuration/#remote_write).
 
 ### Configuration
 
 The distributors form a [hash ring]({{< relref "../hash-ring/index.md" >}}) (called the distributors’ ring) to discover each other and enforce limits correctly.
-To configure the distributors' hash ring, refer to [configuring hash rings]({{< relref "../../configuring/configuring-hash-rings.md" >}}).
+To configure the distributors' hash ring, refer to [configuring hash rings]({{< relref "../../configure/configuring-hash-rings.md" >}}).
 
 ## High-availability tracker
 
@@ -65,7 +73,7 @@ The distributor includes an HA tracker.
 When the HA tracker is enabled, the distributor deduplicates incoming series from Prometheus HA pairs.
 This enables you to have multiple HA replicas of the same Prometheus servers that write the same series to Mimir and then deduplicates the series in the Mimir distributor.
 
-For more information about HA deduplication and how to configure it, refer to [configure HA deduplication]({{< relref "../../configuring/configuring-high-availability-deduplication.md" >}}).
+For more information about HA deduplication and how to configure it, refer to [configure HA deduplication]({{< relref "../../configure/configuring-high-availability-deduplication.md" >}}).
 
 ## Sharding and replication
 

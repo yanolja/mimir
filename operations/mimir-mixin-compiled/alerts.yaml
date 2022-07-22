@@ -66,18 +66,18 @@ groups:
   - alert: MimirFrontendQueriesStuck
     annotations:
       message: |
-        There are {{ $value }} queued up queries in {{ $labels.cluster }}/{{ $labels.namespace }} query-frontend.
+        There are {{ $value }} queued up queries in {{ $labels.cluster }}/{{ $labels.namespace }} {{ $labels.job }}.
     expr: |
-      sum by (cluster, namespace) (cortex_query_frontend_queue_length) > 1
+      sum by (cluster, namespace, job) (cortex_query_frontend_queue_length) > 1
     for: 5m
     labels:
       severity: critical
   - alert: MimirSchedulerQueriesStuck
     annotations:
       message: |
-        There are {{ $value }} queued up queries in {{ $labels.cluster }}/{{ $labels.namespace }} query-scheduler.
+        There are {{ $value }} queued up queries in {{ $labels.cluster }}/{{ $labels.namespace }} {{ $labels.job }}.
     expr: |
-      sum by (cluster, namespace) (cortex_query_scheduler_queue_length) > 1
+      sum by (cluster, namespace, job) (cortex_query_scheduler_queue_length) > 1
     for: 5m
     labels:
       severity: critical
@@ -274,7 +274,9 @@ groups:
         Ingester {{ $labels.pod }} in {{ $labels.cluster }}/{{ $labels.namespace }} is using too much memory.
     expr: |
       (
-        container_memory_working_set_bytes{container="ingester"}
+        # We use RSS instead of working set memory because of the ingester's extensive usage of mmap.
+        # See: https://github.com/grafana/mimir/issues/2466
+        container_memory_rss{container="ingester"}
           /
         ( container_spec_memory_limit_bytes{container="ingester"} > 0 )
       ) > 0.65
@@ -287,7 +289,9 @@ groups:
         Ingester {{ $labels.pod }} in {{ $labels.cluster }}/{{ $labels.namespace }} is using too much memory.
     expr: |
       (
-        container_memory_working_set_bytes{container="ingester"}
+        # We use RSS instead of working set memory because of the ingester's extensive usage of mmap.
+        # See: https://github.com/grafana/mimir/issues/2466
+        container_memory_rss{container="ingester"}
           /
         ( container_spec_memory_limit_bytes{container="ingester"} > 0 )
       ) > 0.8
@@ -321,7 +325,7 @@ groups:
       ) > 1
     for: 5m
     labels:
-      severity: warning
+      severity: critical
   - alert: MimirRulerMissedEvaluations
     annotations:
       message: |
@@ -352,7 +356,7 @@ groups:
       message: Mimir instance {{ $labels.pod }} in {{ $labels.cluster }}/{{ $labels.namespace
         }} sees incorrect number of gossip members.
     expr: |
-      avg by (cluster, namespace) (memberlist_client_cluster_members_count) != sum by (cluster, namespace) (up{job=~".+/(alertmanager|compactor|distributor|ingester.*|querier.*|ruler|store-gateway.*|cortex|mimir)"})
+      avg by (cluster, namespace) (memberlist_client_cluster_members_count) != sum by (cluster, namespace) (up{job=~".+/(alertmanager|compactor|distributor|ingester.*|querier.*|ruler|ruler-querier.*|store-gateway.*|cortex|mimir)"})
     for: 15m
     labels:
       severity: warning
@@ -655,6 +659,7 @@ groups:
       (cortex_compactor_last_successful_run_timestamp_seconds > 0)
     for: 1h
     labels:
+      reason: in-last-24h
       severity: critical
   - alert: MimirCompactorHasNotSuccessfullyRunCompaction
     annotations:
@@ -664,6 +669,7 @@ groups:
       cortex_compactor_last_successful_run_timestamp_seconds == 0
     for: 24h
     labels:
+      reason: since-startup
       severity: critical
   - alert: MimirCompactorHasNotSuccessfullyRunCompaction
     annotations:
@@ -672,6 +678,7 @@ groups:
     expr: |
       increase(cortex_compactor_runs_failed_total[2h]) >= 2
     labels:
+      reason: consecutive-failures
       severity: critical
   - alert: MimirCompactorHasNotUploadedBlocks
     annotations:
