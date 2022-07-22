@@ -64,9 +64,8 @@ func (m *StringMap) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 
 // Owner name.
 type Owner struct {
-	XMLName     xml.Name `xml:"Owner" json:"owner"`
-	DisplayName string   `xml:"ID" json:"name"`
-	ID          string   `xml:"DisplayName" json:"id"`
+	DisplayName string `json:"name"`
+	ID          string `json:"id"`
 }
 
 // UploadInfo contains information about the
@@ -84,14 +83,6 @@ type UploadInfo struct {
 	// not to be confused with `Expires` HTTP header.
 	Expiration       time.Time
 	ExpirationRuleID string
-}
-
-// RestoreInfo contains information of the restore operation of an archived object
-type RestoreInfo struct {
-	// Is the restoring operation is still ongoing
-	OngoingRestore bool
-	// When the restored copy of the archived object will be removed
-	ExpiryTime time.Time
 }
 
 // ObjectInfo container for object metadata.
@@ -124,7 +115,14 @@ type ObjectInfo struct {
 	Owner Owner
 
 	// ACL grant.
-	Grant []Grant
+	Grant []struct {
+		Grantee struct {
+			ID          string `xml:"ID"`
+			DisplayName string `xml:"DisplayName"`
+			URI         string `xml:"URI"`
+		} `xml:"Grantee"`
+		Permission string `xml:"Permission"`
+	} `xml:"Grant"`
 
 	// The class of storage used to store the object.
 	StorageClass string `json:"storageClass"`
@@ -145,8 +143,6 @@ type ObjectInfo struct {
 	// not to be confused with `Expires` HTTP header.
 	Expiration       time.Time
 	ExpirationRuleID string
-
-	Restore *RestoreInfo
 
 	// Error
 	Err error `json:"-"`

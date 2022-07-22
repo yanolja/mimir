@@ -38,10 +38,7 @@ import (
 // prior to the credentials actually expiring. This is beneficial
 // so race conditions with expiring credentials do not cause
 // request to fail unexpectedly due to ExpiredTokenException exceptions.
-// DefaultExpiryWindow can be used as parameter to (*Expiry).SetExpiration.
-// When used the tokens refresh will be triggered when 80% of the elapsed
-// time until the actual expiration time is passed.
-const DefaultExpiryWindow = -1
+const DefaultExpiryWindow = time.Second * 10 // 10 secs
 
 // A IAM retrieves credentials from the EC2 service, and keeps track if
 // those credentials are expired.
@@ -62,10 +59,6 @@ const (
 	defaultECSRoleEndpoint      = "http://169.254.170.2"
 	defaultSTSRoleEndpoint      = "https://sts.amazonaws.com"
 	defaultIAMSecurityCredsPath = "/latest/meta-data/iam/security-credentials/"
-	tokenRequestTTLHeader       = "X-aws-ec2-metadata-token-ttl-seconds"
-	tokenPath                   = "/latest/api/token"
-	tokenTTL                    = "21600"
-	tokenRequestHeader          = "X-aws-ec2-metadata-token"
 )
 
 // NewIAM returns a pointer to a new Credentials object wrapping the IAM.
@@ -82,7 +75,6 @@ func NewIAM(endpoint string) *Credentials {
 // Error will be returned if the request fails, or unable to extract
 // the desired
 func (m *IAM) Retrieve() (Value, error) {
-	token := os.Getenv("AWS_CONTAINER_AUTHORIZATION_TOKEN")
 	var roleCreds ec2RoleCredRespBody
 	var err error
 
@@ -112,7 +104,7 @@ func (m *IAM) Retrieve() (Value, error) {
 
 				return &WebIdentityToken{Token: string(token)}, nil
 			},
-			RoleARN:         os.Getenv("AWS_ROLE_ARN"),
+			roleARN:         os.Getenv("AWS_ROLE_ARN"),
 			roleSessionName: os.Getenv("AWS_ROLE_SESSION_NAME"),
 		}
 
@@ -128,7 +120,7 @@ func (m *IAM) Retrieve() (Value, error) {
 				os.Getenv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"))
 		}
 
-		roleCreds, err = getEcsTaskCredentials(m.Client, endpoint, token)
+		roleCreds, err = getEcsTaskCredentials(m.Client, endpoint)
 
 	case len(os.Getenv("AWS_CONTAINER_CREDENTIALS_FULL_URI")) > 0:
 		if len(endpoint) == 0 {
@@ -142,7 +134,7 @@ func (m *IAM) Retrieve() (Value, error) {
 			}
 		}
 
-		roleCreds, err = getEcsTaskCredentials(m.Client, endpoint, token)
+		roleCreds, err = getEcsTaskCredentials(m.Client, endpoint)
 
 	default:
 		roleCreds, err = getCredentials(m.Client, endpoint)
@@ -184,6 +176,10 @@ type ec2RoleCredRespBody struct {
 // be sent to fetch the rolling access credentials.
 // http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/iam-roles-for-amazon-ec2.html
 func getIAMRoleURL(endpoint string) (*url.URL, error) {
+	if endpoint == "" {
+		endpoint = defaultIAMRoleEndpoint
+	}
+
 	u, err := url.Parse(endpoint)
 	if err != nil {
 		return nil, err
@@ -196,13 +192,10 @@ func getIAMRoleURL(endpoint string) (*url.URL, error) {
 // with the current EC2 service. If there are no credentials,
 // or there is an error making or receiving the request.
 // http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/iam-roles-for-amazon-ec2.html
-func listRoleNames(client *http.Client, u *url.URL, token string) ([]string, error) {
+func listRoleNames(client *http.Client, u *url.URL) ([]string, error) {
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
-	}
-	if token != "" {
-		req.Header.Add(tokenRequestHeader, token)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -226,14 +219,10 @@ func listRoleNames(client *http.Client, u *url.URL, token string) ([]string, err
 	return credsList, nil
 }
 
-func getEcsTaskCredentials(client *http.Client, endpoint string, token string) (ec2RoleCredRespBody, error) {
+func getEcsTaskCredentials(client *http.Client, endpoint string) (ec2RoleCredRespBody, error) {
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
 		return ec2RoleCredRespBody{}, err
-	}
-
-	if token != "" {
-		req.Header.Set("Authorization", token)
 	}
 
 	resp, err := client.Do(req)
@@ -253,39 +242,12 @@ func getEcsTaskCredentials(client *http.Client, endpoint string, token string) (
 	return respCreds, nil
 }
 
-func fetchIMDSToken(client *http.Client, endpoint string) (string, error) {
-	req, err := http.NewRequest(http.MethodPut, endpoint+tokenPath, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Add(tokenRequestTTLHeader, tokenTTL)
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	data, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", errors.New(resp.Status)
-	}
-	return string(data), nil
-}
-
 // getCredentials - obtains the credentials from the IAM role name associated with
 // the current EC2 service.
 //
 // If the credentials cannot be found, or there is an error
 // reading the response an error will be returned.
 func getCredentials(client *http.Client, endpoint string) (ec2RoleCredRespBody, error) {
-	if endpoint == "" {
-		endpoint = defaultIAMRoleEndpoint
-	}
-
-	// https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html
-	token, _ := fetchIMDSToken(client, endpoint)
 
 	// http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/iam-roles-for-amazon-ec2.html
 	u, err := getIAMRoleURL(endpoint)
@@ -294,7 +256,7 @@ func getCredentials(client *http.Client, endpoint string) (ec2RoleCredRespBody, 
 	}
 
 	// http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/iam-roles-for-amazon-ec2.html
-	roleNames, err := listRoleNames(client, u, token)
+	roleNames, err := listRoleNames(client, u)
 	if err != nil {
 		return ec2RoleCredRespBody{}, err
 	}
@@ -317,9 +279,6 @@ func getCredentials(client *http.Client, endpoint string) (ec2RoleCredRespBody, 
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
 		return ec2RoleCredRespBody{}, err
-	}
-	if token != "" {
-		req.Header.Add(tokenRequestHeader, token)
 	}
 
 	resp, err := client.Do(req)

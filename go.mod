@@ -21,7 +21,7 @@ require (
 	github.com/hashicorp/golang-lru v0.5.4
 	github.com/json-iterator/go v1.1.12
 	github.com/leanovate/gopter v0.2.4
-	github.com/minio/minio-go/v7 v7.0.16-0.20211116163909-d00629356463
+	github.com/minio/minio-go/v7 v7.0.10
 	github.com/mitchellh/go-wordwrap v1.0.0
 	github.com/oklog/ulid v1.3.1
 	github.com/opentracing-contrib/go-grpc v0.0.0-20210225150812-73cb765af46e
@@ -156,7 +156,6 @@ require (
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/jpillora/backoff v1.0.0 // indirect
 	github.com/julienschmidt/httprouter v1.3.0 // indirect
-	github.com/klauspost/compress v1.13.6 // indirect
 	github.com/klauspost/cpuid v1.3.1 // indirect
 	github.com/kr/pretty v0.2.1 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
